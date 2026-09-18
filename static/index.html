@@ -5,11 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>DeepTravel · 多Agent旅行规划管家</title>
 
-<!-- Vue3 CDN -->
 <script src="https://unpkg.com/vue@3.4/dist/vue.global.prod.js"></script>
-<!-- Markdown 渲染 -->
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<!-- highlight.js（代码高亮） -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css" />
 <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/highlight.min.js"></script>
 
@@ -33,9 +30,7 @@
     --radius: 14px;
     --radius-sm: 8px;
   }
-
   * { box-sizing: border-box; margin: 0; padding: 0; }
-
   html, body {
     height: 100%;
     background: var(--bg);
@@ -44,10 +39,9 @@
                  "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-
   #app { height: 100%; }
 
-  /* ============ 顶部 Header ============ */
+  /* ============ Header ============ */
   .app-header {
     height: 56px;
     background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
@@ -58,26 +52,41 @@
     gap: 12px;
     box-shadow: var(--shadow-md);
   }
-  .app-header .logo {
-    font-size: 20px;
-    font-weight: 700;
-    letter-spacing: -0.5px;
-  }
+  .app-header .logo { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
   .app-header .logo-icon { font-size: 22px; margin-right: 4px; }
-  .app-header .sub {
-    font-size: 12px;
-    opacity: 0.85;
-    margin-left: auto;
-  }
-  .app-header .env-tag {
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 10px;
+  .app-header .sub { font-size: 12px; opacity: 0.85; margin-left: auto; }
+  .env-tag {
+    font-size: 11px; padding: 2px 8px; border-radius: 10px;
     background: rgba(255,255,255,0.2);
   }
   .env-tag.mock { background: rgba(255,193,7,0.35); }
 
-  /* ============ 主体：两栏 ============ */
+  /* Header Tabs */
+  .header-tabs {
+    display: flex;
+    gap: 4px;
+    margin-left: 20px;
+    background: rgba(255,255,255,0.12);
+    padding: 3px;
+    border-radius: 10px;
+  }
+  .header-tab {
+    padding: 5px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 8px;
+    cursor: pointer;
+    opacity: 0.8;
+    transition: all 0.2s;
+  }
+  .header-tab.active {
+    background: #fff;
+    color: var(--primary);
+    opacity: 1;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  }
+
+  /* ============ 主体 ============ */
   .layout {
     display: grid;
     grid-template-columns: minmax(400px, 1fr) minmax(480px, 1.3fr);
@@ -86,12 +95,10 @@
     height: calc(100% - 56px);
     overflow: hidden;
   }
-
   @media (max-width: 960px) {
     .layout { grid-template-columns: 1fr; overflow: auto; height: auto; }
   }
 
-  /* ============ 左栏：输入 + 历史 ============ */
   .col-input, .col-result {
     background: var(--bg-card);
     border: 1px solid var(--border);
@@ -101,7 +108,6 @@
     flex-direction: column;
     overflow: hidden;
   }
-
   .col-title {
     padding: 14px 20px;
     font-weight: 600;
@@ -117,110 +123,161 @@
   /* 输入区 */
   .input-area { padding: 16px 20px; }
   .input-area textarea {
-    width: 100%;
-    min-height: 100px;
-    padding: 12px 14px;
-    border: 1.5px solid var(--border);
-    border-radius: var(--radius-sm);
-    resize: vertical;
-    font-size: 14px;
-    font-family: inherit;
-    color: var(--text);
-    background: var(--bg);
+    width: 100%; min-height: 100px; padding: 12px 14px;
+    border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+    resize: vertical; font-size: 14px; font-family: inherit;
+    color: var(--text); background: var(--bg);
     transition: border-color 0.2s, box-shadow 0.2s;
   }
   .input-area textarea:focus {
-    outline: none;
-    border-color: var(--primary);
+    outline: none; border-color: var(--primary);
     box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
   }
   .input-actions {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    display: flex; justify-content: space-between; align-items: center;
     margin-top: 12px;
   }
   .input-actions label {
-    font-size: 13px;
-    color: var(--text-muted);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    cursor: pointer;
+    font-size: 13px; color: var(--text-muted);
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
   }
   .btn-primary {
     background: linear-gradient(135deg, #6366f1, #8b5cf6);
-    color: #fff;
-    border: none;
-    border-radius: 10px;
-    padding: 10px 22px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    color: #fff; border: none; border-radius: 10px;
+    padding: 10px 22px; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+    display: flex; align-items: center; gap: 8px;
   }
   .btn-primary:hover:not(:disabled) {
     transform: translateY(-1px);
     box-shadow: 0 6px 16px rgba(99,102,241,0.35);
   }
   .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
+  .btn-secondary {
+    background: var(--bg-soft); color: var(--text-sub);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 18px; font-size: 14px; font-weight: 500;
+    cursor: pointer; transition: background 0.15s;
+  }
+  .btn-secondary:hover:not(:disabled) { background: var(--border); }
 
-  /* 快捷提示 */
   .quick-prompts {
-    padding: 0 20px 16px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+    padding: 0 20px 16px; display: flex; flex-wrap: wrap; gap: 8px;
   }
   .quick-prompts .chip {
-    font-size: 12.5px;
-    padding: 6px 12px;
-    background: var(--primary-soft);
-    color: var(--primary);
-    border-radius: 16px;
-    cursor: pointer;
-    border: 1px solid rgba(99,102,241,0.18);
-    transition: background 0.15s;
+    font-size: 12.5px; padding: 6px 12px;
+    background: var(--primary-soft); color: var(--primary);
+    border-radius: 16px; cursor: pointer;
+    border: 1px solid rgba(99,102,241,0.18); transition: background 0.15s;
   }
   .quick-prompts .chip:hover { background: rgba(99,102,241,0.15); }
 
-  /* Agent 进度面板 */
-  .agents-panel {
-    flex: 1;
-    overflow-y: auto;
-    padding: 12px 16px 20px;
+  /* 调整输入框（已有方案上修改） */
+  .adjust-area {
+    padding: 14px 20px;
+    background: linear-gradient(135deg, rgba(139,92,246,0.06), rgba(99,102,241,0.04));
+    border-bottom: 1px solid var(--border);
+  }
+  .adjust-area textarea {
+    width: 100%; min-height: 60px; padding: 10px 12px;
+    border: 1.5px solid rgba(139,92,246,0.3); border-radius: var(--radius-sm);
+    resize: vertical; font-size: 13.5px; font-family: inherit;
+    color: var(--text); background: #fff;
+  }
+  .adjust-area textarea:focus {
+    outline: none; border-color: #8b5cf6;
+    box-shadow: 0 0 0 3px rgba(139,92,246,0.15);
+  }
+  .adjust-badge {
+    display: inline-block; font-size: 11px; padding: 2px 8px;
+    border-radius: 8px; background: rgba(139,92,246,0.12); color: #8b5cf6;
+    font-weight: 500; margin-right: 8px;
   }
 
-  .agent-item {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    padding: 12px;
+  /* HITL 面板 */
+  .hitl-panel {
+    margin: 10px 20px; padding: 14px 18px;
+    background: linear-gradient(135deg, rgba(245,158,11,0.08), rgba(239,68,68,0.06));
+    border: 1.5px dashed var(--warning);
+    border-radius: var(--radius);
+  }
+  .hitl-header {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 10px; font-weight: 600; font-size: 14px; color: var(--warning);
+  }
+  .hitl-header .icon { font-size: 18px; }
+  .hitl-desc {
+    font-size: 12.5px; color: var(--text-sub); line-height: 1.6; margin-bottom: 12px;
+  }
+  .hitl-actions { display: flex; gap: 10px; }
+  .btn-approve {
+    background: var(--success); color: #fff; border: none;
+    border-radius: 8px; padding: 8px 20px; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: filter 0.15s;
+  }
+  .btn-approve:hover { filter: brightness(1.08); }
+  .btn-revise {
+    background: var(--danger); color: #fff; border: none;
+    border-radius: 8px; padding: 8px 20px; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: filter 0.15s;
+  }
+  .btn-revise:hover { filter: brightness(1.08); }
+
+  /* 历史会话列表 */
+  .history-list {
+    flex: 1; overflow-y: auto; padding: 12px;
+  }
+  .history-empty {
+    text-align: center; padding: 40px 20px;
+    color: var(--text-muted); font-size: 13px;
+  }
+  .history-item {
+    padding: 12px 14px; margin-bottom: 8px;
     border-radius: var(--radius-sm);
-    margin-bottom: 8px;
-    background: transparent;
-    transition: background 0.2s;
-    position: relative;
+    border: 1px solid var(--border);
+    cursor: pointer; transition: all 0.15s;
+    background: var(--bg);
+  }
+  .history-item:hover {
+    border-color: var(--primary);
+    box-shadow: 0 2px 8px rgba(99,102,241,0.12);
+    transform: translateY(-1px);
+  }
+  .history-item-top {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 4px;
+  }
+  .history-id {
+    font-size: 12px; font-family: ui-monospace, monospace;
+    color: var(--text-muted);
+  }
+  .history-tag {
+    font-size: 11px; padding: 2px 8px; border-radius: 8px;
+    background: var(--primary-soft); color: var(--primary);
+  }
+  .history-hitl-tag {
+    background: rgba(245,158,11,0.12); color: var(--warning);
+  }
+
+  /* Agent 进度 */
+  .agents-panel {
+    flex: 1; overflow-y: auto; padding: 12px 16px 20px;
+  }
+  .agent-item {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 12px; border-radius: var(--radius-sm);
+    margin-bottom: 8px; background: transparent;
+    transition: background 0.2s; position: relative;
   }
   .agent-item.active { background: rgba(99,102,241,0.06); }
   .agent-item.done { background: rgba(16,185,129,0.05); }
   .agent-item.revising { background: rgba(239,68,68,0.06); }
 
   .agent-icon {
-    width: 38px;
-    height: 38px;
-    border-radius: 10px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-    flex-shrink: 0;
-    background: var(--bg-soft);
-    color: var(--text-muted);
-    position: relative;
+    width: 38px; height: 38px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; flex-shrink: 0;
+    background: var(--bg-soft); color: var(--text-muted); position: relative;
   }
   .agent-item.active .agent-icon { animation: pulse 1.6s ease-in-out infinite; }
   .agent-item.done .agent-icon { background: rgba(16,185,129,0.12); color: var(--success); }
@@ -234,177 +291,113 @@
 
   .agent-info { flex: 1; min-width: 0; }
   .agent-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    display: flex; justify-content: space-between; align-items: center;
     margin-bottom: 2px;
   }
   .agent-label { font-weight: 600; font-size: 13.5px; color: var(--text); }
   .agent-badge {
-    font-size: 11px;
-    padding: 1px 8px;
-    border-radius: 8px;
-    background: var(--bg-soft);
-    color: var(--text-muted);
+    font-size: 11px; padding: 1px 8px; border-radius: 8px;
+    background: var(--bg-soft); color: var(--text-muted);
   }
   .agent-item.active .agent-badge { background: var(--primary-soft); color: var(--primary); }
   .agent-item.done .agent-badge { background: rgba(16,185,129,0.12); color: var(--success); }
   .agent-item.revising .agent-badge { background: rgba(239,68,68,0.12); color: var(--danger); }
-
   .agent-desc { font-size: 12px; color: var(--text-muted); }
   .agent-report {
-    margin-top: 6px;
-    font-size: 12px;
-    color: var(--text-sub);
-    white-space: pre-wrap;
-    max-height: 140px;
-    overflow: hidden;
-    background: var(--bg-soft);
-    border-radius: 6px;
-    padding: 8px 10px;
-    line-height: 1.6;
-    transition: max-height 0.3s;
+    margin-top: 6px; font-size: 12px; color: var(--text-sub);
+    white-space: pre-wrap; max-height: 140px; overflow: hidden;
+    background: var(--bg-soft); border-radius: 6px;
+    padding: 8px 10px; line-height: 1.6; transition: max-height 0.3s;
     cursor: pointer;
   }
   .agent-report.expanded { max-height: 800px; }
   .agent-report.collapsed::after {
-    content: "\2026\2026\2026";
-    display: block;
-    text-align: center;
-    color: var(--text-muted);
-    font-size: 11px;
+    content: "..."; display: block; text-align: center;
+    color: var(--text-muted); font-size: 11px;
   }
 
-  /* 修订提示条 */
   .revise-banner {
-    margin: 6px 12px;
-    padding: 8px 12px;
-    background: rgba(239,68,68,0.08);
-    border: 1px dashed var(--danger);
-    border-radius: var(--radius-sm);
-    font-size: 12px;
-    color: var(--danger);
-    text-align: center;
+    margin: 6px 12px; padding: 8px 12px;
+    background: rgba(239,68,68,0.08); border: 1px dashed var(--danger);
+    border-radius: var(--radius-sm); font-size: 12px;
+    color: var(--danger); text-align: center;
   }
 
-  /* ============ 右栏：结果 ============ */
+  /* 右栏 */
   .result-empty {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    color: var(--text-muted);
-    padding: 40px;
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 12px; color: var(--text-muted); padding: 40px;
   }
   .result-empty .big-icon { font-size: 56px; opacity: 0.5; }
   .result-empty h3 { font-weight: 600; font-size: 16px; color: var(--text-sub); }
   .result-empty p { font-size: 13px; text-align: center; }
 
   .report-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 24px 28px;
+    flex: 1; overflow-y: auto; padding: 24px 28px;
   }
-
-  /* Markdown 样式 */
   .report-body h1 {
-    font-size: 22px;
-    font-weight: 700;
-    margin: 20px 0 12px;
-    padding-bottom: 8px;
+    font-size: 22px; font-weight: 700;
+    margin: 20px 0 12px; padding-bottom: 8px;
     border-bottom: 2px solid var(--border);
   }
   .report-body h2 {
-    font-size: 17px;
-    font-weight: 700;
-    margin: 20px 0 10px;
-    color: var(--primary);
+    font-size: 17px; font-weight: 700;
+    margin: 20px 0 10px; color: var(--primary);
   }
   .report-body h3 {
-    font-size: 14.5px;
-    font-weight: 600;
-    margin: 14px 0 8px;
-    color: var(--text);
+    font-size: 14.5px; font-weight: 600;
+    margin: 14px 0 8px; color: var(--text);
   }
   .report-body p { margin: 6px 0; line-height: 1.75; font-size: 14px; }
   .report-body ul, .report-body ol { padding-left: 22px; margin: 6px 0; line-height: 1.8; }
   .report-body li { font-size: 13.5px; }
   .report-body table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 10px 0 14px;
-    font-size: 13px;
-    border-radius: 8px;
-    overflow: hidden;
+    width: 100%; border-collapse: collapse;
+    margin: 10px 0 14px; font-size: 13px;
+    border-radius: 8px; overflow: hidden;
     box-shadow: 0 1px 3px rgba(0,0,0,0.06);
   }
   .report-body th {
-    background: var(--bg-soft);
-    padding: 8px 12px;
-    text-align: left;
-    font-weight: 600;
-    font-size: 12.5px;
-    color: var(--text-sub);
+    background: var(--bg-soft); padding: 8px 12px;
+    text-align: left; font-weight: 600;
+    font-size: 12.5px; color: var(--text-sub);
     border-bottom: 1px solid var(--border);
   }
-  .report-body td {
-    padding: 7px 12px;
-    border-bottom: 1px solid var(--border);
-  }
+  .report-body td { padding: 7px 12px; border-bottom: 1px solid var(--border); }
   .report-body tr:last-child td { border-bottom: none; }
   .report-body blockquote {
     border-left: 3px solid var(--primary);
     background: var(--primary-soft);
-    padding: 6px 14px;
-    margin: 8px 0;
+    padding: 6px 14px; margin: 8px 0;
     border-radius: 0 6px 6px 0;
-    font-size: 13px;
-    color: var(--text-sub);
+    font-size: 13px; color: var(--text-sub);
   }
   .report-body code {
-    background: var(--bg-soft);
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-size: 12.5px;
+    background: var(--bg-soft); padding: 1px 6px;
+    border-radius: 4px; font-size: 12.5px;
     font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
   }
   .report-body hr {
-    border: none;
-    border-top: 1px dashed var(--border);
-    margin: 18px 0;
+    border: none; border-top: 1px dashed var(--border); margin: 18px 0;
   }
   .report-body strong { color: var(--text); }
 
-  /* 状态行 */
   .status-bar {
-    padding: 10px 20px;
-    border-top: 1px solid var(--border);
-    background: var(--bg-soft);
-    font-size: 12px;
-    color: var(--text-muted);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
+    padding: 10px 20px; border-top: 1px solid var(--border);
+    background: var(--bg-soft); font-size: 12px; color: var(--text-muted);
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
   }
   .status-bar .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 10px;
-    border-radius: 10px;
-    background: var(--bg);
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 10px; border-radius: 10px; background: var(--bg);
   }
   .status-bar .pill.done { color: var(--success); }
   .status-bar .pill.error { color: var(--danger); }
   .status-bar .pill.loading { color: var(--primary); }
   .spinner {
-    width: 12px; height: 12px;
-    border: 2px solid var(--primary);
-    border-top-color: transparent;
-    border-radius: 50%;
+    width: 12px; height: 12px; border: 2px solid var(--primary);
+    border-top-color: transparent; border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -412,55 +405,101 @@
 </head>
 <body>
 <div id="app">
-  <!-- Header -->
   <header class="app-header">
     <span class="logo-icon">🗺️</span>
     <span class="logo">DeepTravel</span>
     <span class="sub">LangGraph 多Agent旅行规划管家</span>
+
+    <div class="header-tabs">
+      <div class="header-tab" :class="{ active: view === 'plan' }" @click="switchView('plan')">✨ 新建规划</div>
+      <div class="header-tab" :class="{ active: view === 'history' }" @click="switchView('history')">📚 历史方案</div>
+    </div>
+
     <span class="env-tag" :class="{ mock: mockMode }">{{ mockMode ? 'Mock' : 'Real' }}</span>
   </header>
 
-  <main class="layout">
-    <!-- 左栏：输入 + Agent 进度 -->
+  <!-- ============ 视图 1: 新建规划 ============ -->
+  <main class="layout" v-if="view === 'plan'">
     <section class="col-input">
       <div class="col-title">✈️ 旅行需求</div>
-      <div class="input-area">
+
+      <!-- 已有会话显示调整入口 -->
+      <div v-if="currentThreadId && finalPlan" class="adjust-area">
+        <div style="margin-bottom:8px;">
+          <span class="adjust-badge">已载入方案</span>
+          <span style="font-size:11px; color:var(--text-muted); font-family:monospace;">{{ currentThreadId }}</span>
+          <button class="btn-secondary" style="padding:2px 10px; font-size:11px; margin-left:8px;" @click="resetView">新建</button>
+        </div>
         <textarea
-          v-model="userInput"
-          placeholder="描述你的旅行计划，例如：我想去成都旅游3天2晚，两个人，预算5000元，喜欢大熊猫和美食"
-          @keydown.ctrl.enter="startPlan"
-          :disabled="running"
+          v-model="adjustInput"
+          placeholder="💡 修改方案：例如「预算改成3000」「加一天行程」「换个目的地」…"
+          :disabled="adjustRunning"
         ></textarea>
-        <div class="input-actions">
-          <label>
-            <input type="checkbox" v-model="mockMode" />
-            使用 Mock（跳过真实 LLM + API）
-          </label>
-          <button class="btn-primary" :disabled="running || !userInput.trim()" @click="startPlan">
-            <span v-if="running" class="spinner"></span>
-            <span v-else>🚀 开始规划</span>
+        <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+          <button class="btn-primary" :disabled="adjustRunning || !adjustInput.trim()" @click="startAdjust">
+            <span v-if="adjustRunning" class="spinner"></span>
+            <span v-else>⚙️ 智能调整</span>
           </button>
         </div>
       </div>
 
-      <div class="quick-prompts">
-        <span class="chip" @click="quickInput('我想去成都旅游3天2晚，两个人，预算5000元，喜欢大熊猫和美食')">成都·熊猫美食</span>
-        <span class="chip" @click="quickInput('我想去北京旅游4天3晚，预算8000元，带父母，文化历史偏好')">北京·亲子文化</span>
-        <span class="chip" @click="quickInput('我想去三亚5天4晚，情侣度假，预算15000元')">三亚·情侣度假</span>
-        <span class="chip" @click="quickInput('我想去西安3天2晚，一个人背包游，预算3000元')">西安·背包独行</span>
+      <!-- 初始规划输入 -->
+      <template v-if="!currentThreadId">
+        <div class="input-area">
+          <textarea
+            v-model="userInput"
+            placeholder="描述你的旅行计划，例如：我想去成都旅游3天2晚，两个人，预算5000元，喜欢大熊猫和美食"
+            @keydown.ctrl.enter="startPlan"
+            :disabled="running"
+          ></textarea>
+          <div class="input-actions">
+            <label>
+              <input type="checkbox" v-model="mockMode" />
+              使用 Mock（跳过真实 LLM + API）
+            </label>
+            <button class="btn-primary" :disabled="running || !userInput.trim()" @click="startPlan">
+              <span v-if="running" class="spinner"></span>
+              <span v-else>🚀 开始规划</span>
+            </button>
+          </div>
+        </div>
+        <div class="quick-prompts">
+          <span class="chip" @click="quickInput('我想去成都旅游3天2晚，两个人，预算5000元，喜欢大熊猫和美食')">成都·熊猫美食</span>
+          <span class="chip" @click="quickInput('我想去北京旅游4天3晚，预算8000元，带父母，文化历史偏好')">北京·亲子文化</span>
+          <span class="chip" @click="quickInput('我想去三亚5天4晚，情侣度假，预算15000元')">三亚·情侣度假</span>
+          <span class="chip" @click="quickInput('我想去西安3天2晚，一个人背包游，预算3000元')">西安·背包独行</span>
+        </div>
+      </template>
+
+      <!-- HITL 审核面板 -->
+      <div v-if="hitlWaiting" class="hitl-panel">
+        <div class="hitl-header"><span class="icon">⚠️</span>需要人工审核</div>
+        <div class="hitl-desc">
+          Review Agent 连续修订已达上限，或审核结果包含不确定判断。<br/>
+          请决定是 <b>批准方案</b> 还是 <b>继续修订</b>（重置修订计数器让 LLM 再试一次）。
+        </div>
+        <div class="hitl-actions">
+          <button class="btn-approve" :disabled="hitlActioning" @click="hitlDecide('approve')">
+            ✅ 批准方案
+          </button>
+          <button class="btn-revise" :disabled="hitlActioning" @click="hitlDecide('revise')">
+            🔄 继续修订
+          </button>
+        </div>
       </div>
 
       <div class="col-title">🧠 Agent 执行进度</div>
       <div class="agents-panel">
-        <div v-if="!running && completedNodes.length === 0 && revisingCount === 0" class="result-empty" style="padding:20px;">
+        <div v-if="!running && !adjustRunning && completedNodes.length === 0" class="result-empty" style="padding:20px;">
           <div class="big-icon">🤖</div>
-          <h3>等待开始...</h3>
-          <p>输入你的旅行需求，点击"开始规划"<br/>六阶段 Agent 将依次执行</p>
+          <h3 v-if="!currentThreadId">等待开始...</h3>
+          <h3 v-else>当前方案已载入</h3>
+          <p v-if="!currentThreadId">输入旅行需求后点击"开始规划"<br/>六阶段 Agent 将依次执行</p>
+          <p v-else>使用上方"智能调整"修改方案<br/>或切到"历史方案"查看其他</p>
         </div>
 
         <template v-for="(agent, idx) in allAgents" :key="agent.node">
-          <!-- 修订提示 -->
-          <div v-if="idx === 1 && revisingCount > 0 && activeNode === 'itinerary' && (completedNodes.includes('review') || revisingBannerShown)"
+          <div v-if="idx === 1 && revisingCount > 0 && (activeNode === 'itinerary' || revisingBannerShown)"
                class="revise-banner">
             🔁 Review Agent 要求修订，正在重跑 Itinerary（第 {{ revisingCount }} 次）
           </div>
@@ -468,7 +507,6 @@
           <div
             class="agent-item"
             :class="agentItemClass(agent.node)"
-            :style="running && activeNode === agent.node ? { background: activeColor(agent.color) } : {}"
           >
             <div class="agent-icon" :style="{ color: agent.color }">{{ agent.icon }}</div>
             <div class="agent-info">
@@ -479,7 +517,8 @@
               <div class="agent-desc">{{ agent.desc }}</div>
               <div v-if="agentReports[agent.node]"
                    class="agent-report collapsed"
-                   @click="toggleReport(agent.node)">
+                   @click="reportExpanded[agent.node] = !reportExpanded[agent.node]"
+                   :class="{ expanded: reportExpanded[agent.node] }">
                 {{ agentReports[agent.node] }}
               </div>
             </div>
@@ -488,10 +527,9 @@
       </div>
     </section>
 
-    <!-- 右栏：最终方案 -->
     <section class="col-result">
       <div class="col-title">📋 最终方案</div>
-      <div v-if="!finalPlan && !running" class="result-empty">
+      <div v-if="!finalPlan && !running && !adjustRunning" class="result-empty">
         <div class="big-icon">🗺️</div>
         <h3>方案还没生成</h3>
         <p>提交旅行需求后，最终方案会展示在这里<br/>包含行程、预算、安全提示和摘要卡片</p>
@@ -499,17 +537,77 @@
       <div v-else class="report-body" v-html="renderedFinalPlan"></div>
       <div class="status-bar">
         <span>
-          <span v-if="running" class="pill loading">
-            <span class="spinner"></span> 规划进行中...
+          <span v-if="running || adjustRunning" class="pill loading">
+            <span class="spinner"></span> {{ adjustRunning ? '调整中' : '规划中' }}...
           </span>
           <span v-else-if="error" class="pill error">❌ {{ error }}</span>
           <span v-else-if="finalPlan" class="pill done">
             ✅ 完成 · 耗时 {{ totalMsText }} · 修订 {{ revisingCount }} 次
+            <span v-if="adjusted" style="color:#8b5cf6;"> · 已调整</span>
+            <span v-if="hitlWaiting" style="color:var(--warning);"> · 等待审核</span>
           </span>
         </span>
-        <span v-if="running" style="color:var(--text-muted)">
+        <span v-if="running || adjustRunning" style="color:var(--text-muted)">
           当前：{{ currentAgentLabel }}
         </span>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ 视图 2: 历史方案 ============ -->
+  <main class="layout" v-if="view === 'history'">
+    <section class="col-input">
+      <div class="col-title">📚 历史会话</div>
+      <div class="history-list">
+        <div v-if="!historyList.length && !historyLoading" class="history-empty">
+          <div style="font-size:40px; margin-bottom:8px;">📭</div>
+          暂无历史方案<br/>生成新方案后会自动保存在这里
+        </div>
+        <div v-if="historyLoading" class="history-empty">
+          <span class="spinner" style="display:inline-block;"></span>
+          <div style="margin-top:8px;">加载中...</div>
+        </div>
+        <div
+          v-for="(h, i) in historyList"
+          :key="h.thread_id"
+          class="history-item"
+          @click="loadHistory(h.thread_id)"
+        >
+          <div class="history-item-top">
+            <span class="history-id">{{ h.thread_id }}</span>
+            <span class="history-tag">已保存</span>
+          </div>
+          <div style="font-size:12px; color:var(--text-muted);">
+            checkpoints: {{ h.checkpoint_ids ? h.checkpoint_ids.length : '?' }}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="col-result">
+      <div class="col-title">📄 会话详情</div>
+      <div v-if="!selectedHistory" class="result-empty">
+        <div class="big-icon">👈</div>
+        <h3>选择一个会话查看详情</h3>
+        <p>点击左侧列表中的会话<br/>即可恢复当时的完整方案和状态</p>
+      </div>
+      <div v-else>
+        <div class="report-body" v-html="renderedHistoryPlan"></div>
+        <div class="status-bar">
+          <span class="pill">
+            <span class="pill done" style="background:transparent;">已载入</span>
+            thread_id: {{ selectedHistory.thread_id }}
+          </span>
+          <div style="display:flex; gap:8px;">
+            <button class="btn-secondary" style="padding:5px 12px; font-size:12px;" @click="goToPlanWithHistory">
+              ⚙️ 在此基础上调整
+            </button>
+            <button class="btn-secondary" style="padding:5px 12px; font-size:12px; color:var(--danger); border-color:rgba(239,68,68,0.3);"
+                    @click="deleteHistory(selectedHistory.thread_id)">
+              🗑️ 删除
+            </button>
+          </div>
+        </div>
       </div>
     </section>
   </main>
@@ -518,10 +616,8 @@
 <script>
 const { createApp, ref, computed, reactive, onMounted } = Vue;
 
-// Marked 配置
 marked.setOptions({
-  breaks: true,
-  gfm: true,
+  breaks: true, gfm: true,
   highlight(code, lang) {
     if (lang && hljs.getLanguage(lang)) {
       try { return hljs.highlight(code, { language: lang }).value; } catch(_) {}
@@ -530,15 +626,31 @@ marked.setOptions({
   }
 });
 
-const AGENT_ORDER = ["coordinator", "itinerary", "budget", "safety", "review", "integrate"];
+const AGENT_META = [
+  { node: "coordinator", label: "🎯 需求协调", icon: "🎯", color: "#6366f1", desc: "归一化用户需求" },
+  { node: "itinerary",   label: "📅 行程规划", icon: "📅", color: "#0ea5e9", desc: "生成每日行程（高德地图）" },
+  { node: "budget",      label: "💰 预算估算", icon: "💰", color: "#10b981", desc: "按类别拆分预算" },
+  { node: "safety",      label: "🛡️ 安全评估", icon: "🛡️", color: "#f59e0b", desc: "天气 + 安全（心知天气）" },
+  { node: "review",      label: "🔍 方案审核", icon: "🔍", color: "#ef4444", desc: "综合评审三份子报告" },
+  { node: "integrate",   label: "✨ 方案整合", icon: "✨", color: "#8b5cf6", desc: "整合最终方案" },
+];
+const AGENT_ORDER = AGENT_META.map(a => a.node);
 
 createApp({
   setup() {
+    /* ====== View ====== */
+    const view = ref("plan");
+
+    /* ====== 新建规划状态 ====== */
     const userInput = ref("");
+    const adjustInput = ref("");
     const mockMode = ref(false);
     const running = ref(false);
+    const adjustRunning = ref(false);
     const error = ref("");
+    const adjusted = ref(false);
 
+    const currentThreadId = ref("");
     const activeNode = ref("");
     const completedNodes = ref([]);
     const revisingCount = ref(0);
@@ -549,187 +661,294 @@ createApp({
     const finalPlan = ref("");
     const totalMs = ref(0);
 
-    // Agent 元信息
-    const allAgents = ref([
-      { node: "coordinator", label: "🎯 需求协调", icon: "🎯", color: "#6366f1", desc: "归一化用户需求" },
-      { node: "itinerary",   label: "📅 行程规划", icon: "📅", color: "#0ea5e9", desc: "生成每日行程（高德地图）" },
-      { node: "budget",      label: "💰 预算估算", icon: "💰", color: "#10b981", desc: "按类别拆分预算" },
-      { node: "safety",      label: "🛡️ 安全评估", icon: "🛡️", color: "#f59e0b", desc: "天气 + 安全（心知天气）" },
-      { node: "review",      label: "🔍 方案审核", icon: "🔍", color: "#ef4444", desc: "综合评审三份子报告" },
-      { node: "integrate",   label: "✨ 方案整合", icon: "✨", color: "#8b5cf6", desc: "整合最终方案" },
-    ]);
+    /* ====== HITL ====== */
+    const hitlWaiting = ref(false);
+    const hitlActioning = ref(false);
 
+    /* ====== 历史会话 ====== */
+    const historyList = ref([]);
+    const historyLoading = ref(false);
+    const selectedHistory = ref(null);
+
+    const allAgents = ref(AGENT_META);
+
+    /* ====== 计算属性 ====== */
     const currentAgentLabel = computed(() => {
       if (!activeNode.value) return "初始化...";
-      const m = allAgents.value.find(a => a.node === activeNode.value);
+      const m = AGENT_META.find(a => a.node === activeNode.value);
       return m ? m.label : activeNode.value;
     });
-
     const totalMsText = computed(() => {
       const ms = totalMs.value;
       if (ms < 1000) return ms + "ms";
       return (ms / 1000).toFixed(1) + "s";
     });
-
     const renderedFinalPlan = computed(() => {
       if (!finalPlan.value) return "";
       return marked.parse(finalPlan.value);
     });
+    const renderedHistoryPlan = computed(() => {
+      if (!selectedHistory.value?.final_plan) return "";
+      return marked.parse(selectedHistory.value.final_plan);
+    });
 
+    /* ====== UI 辅助 ====== */
     function agentItemClass(node) {
-      if (revisingCount.value > 0 && completedNodes.value.includes("review")
-          && (node === "itinerary" || node === "budget" || node === "safety" || node === "review")) {
-        // 修订重跑链上的节点显示 revising
-        if ((node === "itinerary" || node === "budget" || node === "safety" || node === "review")
-            && activeNode.value) {
-          const idx_cur = AGENT_ORDER.indexOf(activeNode.value);
-          const idx_node = AGENT_ORDER.indexOf(node);
-          if (idx_node >= idx_cur) return "revising";
-        }
-      }
-      if (running.value && activeNode.value === node) return "active";
+      if ((running.value || adjustRunning.value) && activeNode.value === node) return "active";
       if (completedNodes.value.includes(node)) return "done";
       return "";
     }
-
     function agentBadge(node) {
-      if (revisingCount.value > 0 && revisingBannerShown.value
-          && node === "itinerary" && activeNode.value === "itinerary") return "🔁 重跑中";
-      if (running.value && activeNode.value === node) return "执行中...";
+      if ((running.value || adjustRunning.value) && activeNode.value === node) return "执行中...";
       if (completedNodes.value.includes(node)) return "✓ 完成";
       return "等待";
     }
-
-    function activeColor(color) {
-      // 把 hex 颜色转半透明 rgba
-      const c = color.replace("#", "");
-      const r = parseInt(c.substring(0, 2), 16);
-      const g = parseInt(c.substring(2, 4), 16);
-      const b = parseInt(c.substring(4, 6), 16);
-      return { background: `rgba(${r},${g},${b},0.08)` };
-    }
-
-    function toggleReport(node) {
-      reportExpanded[node] = !reportExpanded[node];
-      // 切换 collapsed/expanded class
-      const el = document.querySelector(`.agent-item[data-node="${node}"] .agent-report`);
-      if (el) el.classList.toggle("collapsed");
-    }
-
     function quickInput(text) { userInput.value = text; }
-
-    async function startPlan() {
-      if (!userInput.value.trim() || running.value) return;
-      running.value = true;
-      error.value = "";
-      activeNode.value = "";
+    function resetView() {
+      currentThreadId.value = "";
+      finalPlan.value = "";
+      userInput.value = "";
+      adjustInput.value = "";
+      hitlWaiting.value = false;
       completedNodes.value = [];
-      revisingCount.value = 0;
-      revisingBannerShown.value = false;
       Object.keys(agentReports).forEach(k => delete agentReports[k]);
       Object.keys(reportExpanded).forEach(k => delete reportExpanded[k]);
-      finalPlan.value = "";
-      totalMs.value = 0;
+    }
 
+    /* ====== SSE 解析 ====== */
+    async function consumeSSE(resp, handler) {
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf("\n\n")) !== -1) {
+          const chunk = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          for (const line of chunk.split("\n")) {
+            if (!line.startsWith("data:")) continue;
+            const raw = line.slice(5).trim();
+            if (!raw || raw === "[DONE]") continue;
+            try { handler(JSON.parse(raw)); }
+            catch(e) { console.warn("SSE parse:", raw, e); }
+          }
+        }
+      }
+    }
+
+    /* ====== 新建规划 ====== */
+    async function startPlan() {
+      if (!userInput.value.trim() || running.value) return;
+      resetView();
+      running.value = true; error.value = "";
       try {
         const resp = await fetch("/api/plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            user_input: userInput.value,
-            mock: mockMode.value,
-          }),
+          body: JSON.stringify({ user_input: userInput.value, mock: mockMode.value }),
         });
-
-        if (!resp.ok || !resp.body) {
-          throw new Error(`服务器响应异常 ${resp.status}`);
-        }
-
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-
-          // SSE 帧按 \n\n 分割
-          let idx;
-          while ((idx = buffer.indexOf("\n\n")) !== -1) {
-            const chunk = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
-            const lines = chunk.split("\n");
-            for (const line of lines) {
-              if (!line.startsWith("data:")) continue;
-              const raw = line.slice(5).trim();
-              if (!raw || raw === "[DONE]") continue;
-              try {
-                const evt = JSON.parse(raw);
-                handleEvent(evt);
-              } catch(e) {
-                console.warn("SSE parse error:", raw, e);
-              }
-            }
-          }
-        }
-      } catch (e) {
-        error.value = e.message || String(e);
-      } finally {
-        running.value = false;
-        activeNode.value = "";
-      }
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        await consumeSSE(resp, handlePlanEvent);
+      } catch (e) { error.value = e.message || String(e); }
+      finally { running.value = false; activeNode.value = ""; refreshHistory(); }
     }
 
-    function handleEvent(evt) {
+    function handlePlanEvent(evt) {
       switch (evt.type) {
         case "start":
           mockMode.value = evt.mock;
+          currentThreadId.value = evt.thread_id;
           break;
-
         case "node":
           activeNode.value = evt.node;
-          if (!completedNodes.value.includes(evt.node)) {
-            completedNodes.value.push(evt.node);
-          }
-          if (evt.report) {
-            agentReports[evt.node] = evt.report;
-          }
-          // 非 active 阶段的节点报告默认展开（已经执行完了）
-          if (evt.node !== "integrate") {
-            reportExpanded[evt.node] = false;
-          }
+          if (!completedNodes.value.includes(evt.node)) completedNodes.value.push(evt.node);
+          if (evt.report) agentReports[evt.node] = evt.report;
           break;
-
         case "revise":
           revisingCount.value = evt.count;
           revisingBannerShown.value = true;
           break;
-
         case "done":
           finalPlan.value = evt.final_plan || "";
           totalMs.value = evt.total_ms || 0;
           revisingCount.value = evt.revision_count || 0;
+          if (evt.from_hitl) adjusted.value = true;
           break;
-
         case "error":
           error.value = evt.message;
           break;
       }
     }
 
+    /* ====== 调整 ====== */
+    async function startAdjust() {
+      if (!adjustInput.value.trim() || adjustRunning.value || !currentThreadId.value) return;
+      adjustRunning.value = true; error.value = ""; adjusted.value = true;
+      try {
+        const resp = await fetch("/api/adjust", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            thread_id: currentThreadId.value,
+            modify_request: adjustInput.value,
+            mock: mockMode.value,
+          }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        await consumeSSE(resp, handleAdjustEvent);
+        adjustInput.value = "";
+      } catch (e) { error.value = e.message || String(e); }
+      finally { adjustRunning.value = false; activeNode.value = ""; refreshHistory(); }
+    }
+
+    function handleAdjustEvent(evt) {
+      switch (evt.type) {
+        case "start_adjust":
+          currentThreadId.value = evt.thread_id;
+          break;
+        case "node":
+          activeNode.value = evt.node;
+          if (!completedNodes.value.includes(evt.node)) completedNodes.value.push(evt.node);
+          if (evt.report) agentReports[evt.node] = evt.report;
+          break;
+        case "revise":
+          revisingCount.value = evt.count;
+          revisingBannerShown.value = true;
+          break;
+        case "done":
+          finalPlan.value = evt.final_plan || finalPlan.value;
+          totalMs.value = evt.total_ms || 0;
+          break;
+        case "error":
+          error.value = evt.message;
+          break;
+      }
+    }
+
+    /* ====== HITL ====== */
+    // 当规划完成但 hitl_status=waiting 时显示审核面板
+    // 这里简化：如果 done 事件没 final_plan 且 agent 跑完 review 后有 hitl 节点，就显示
+    // 实际用 state.next[0] 更准确，但 SSE 里没传 hitl_status
+    // 简单策略：每次规划/调整结束后检查 session state
+    async function checkHitlStatus() {
+      if (!currentThreadId.value) return;
+      try {
+        const resp = await fetch(`/api/sessions/${currentThreadId.value}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        // LangGraph get_state 的 next 数组里如果有 hitl 就说明等待中
+        if (data.last_node === "hitl" || data.last_node === "end") {
+          // 进一步：如果没有 final_plan 说明图停了
+          hitlWaiting.value = !data.final_plan;
+        } else {
+          hitlWaiting.value = false;
+        }
+      } catch(_) {}
+    }
+
+    async function hitlDecide(decision) {
+      if (!currentThreadId.value || hitlActioning.value) return;
+      hitlActioning.value = true; error.value = "";
+      try {
+        const resp = await fetch(`/api/hitl/${currentThreadId.value}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision, note: "" }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        await consumeSSE(resp, handleHitlEvent);
+        hitlWaiting.value = false;
+      } catch (e) { error.value = e.message || String(e); }
+      finally { hitlActioning.value = false; refreshHistory(); }
+    }
+
+    function handleHitlEvent(evt) {
+      switch (evt.type) {
+        case "hitl_decision": break;
+        case "node":
+          activeNode.value = evt.node;
+          if (!completedNodes.value.includes(evt.node)) completedNodes.value.push(evt.node);
+          if (evt.report) agentReports[evt.node] = evt.report;
+          break;
+        case "done":
+          finalPlan.value = evt.final_plan || finalPlan.value;
+          totalMs.value = evt.total_ms || 0;
+          break;
+        case "error": error.value = evt.message; break;
+      }
+    }
+
+    /* ====== 历史会话 ====== */
+    async function refreshHistory() {
+      historyLoading.value = true;
+      try {
+        const resp = await fetch("/api/sessions");
+        if (resp.ok) {
+          const data = await resp.json();
+          historyList.value = data.sessions || [];
+        }
+      } catch(_) {}
+      finally { historyLoading.value = false; }
+    }
+
+    async function loadHistory(threadId) {
+      try {
+        const resp = await fetch(`/api/sessions/${threadId}`);
+        if (resp.ok) {
+          selectedHistory.value = await resp.json();
+        }
+      } catch(_) {}
+    }
+
+    async function deleteHistory(threadId) {
+      if (!confirm(`确认删除会话 ${threadId}？`)) return;
+      try {
+        await fetch(`/api/sessions/${threadId}`, { method: "DELETE" });
+        selectedHistory.value = null;
+        refreshHistory();
+      } catch(_) {}
+    }
+
+    function goToPlanWithHistory() {
+      if (!selectedHistory.value) return;
+      view.value = "plan";
+      currentThreadId.value = selectedHistory.value.thread_id;
+      finalPlan.value = selectedHistory.value.final_plan || "";
+      agentReports.integrate = finalPlan.value; // 快速显示在 agents 面板
+      // 重置 nodes 显示为已完成
+      completedNodes.value = AGENT_ORDER.slice();
+    }
+
+    /* ====== View 切换 ====== */
+    function switchView(v) {
+      view.value = v;
+      if (v === "history") refreshHistory();
+    }
+
+    onMounted(refreshHistory);
+
     return {
-      userInput, mockMode, running, error,
-      activeNode, completedNodes, revisingCount, revisingBannerShown,
+      view, mockMode,
+      userInput, adjustInput,
+      running, adjustRunning, error, adjusted,
+      currentThreadId, activeNode, completedNodes, revisingCount, revisingBannerShown,
       agentReports, reportExpanded,
-      finalPlan, totalMs,
-      allAgents,
-      currentAgentLabel, totalMsText, renderedFinalPlan,
-      agentItemClass, agentBadge, activeColor, toggleReport,
-      quickInput, startPlan,
+      finalPlan, totalMs, allAgents,
+      hitlWaiting, hitlActioning,
+      historyList, historyLoading, selectedHistory,
+      currentAgentLabel, totalMsText, renderedFinalPlan, renderedHistoryPlan,
+      agentItemClass, agentBadge, quickInput, resetView,
+      startPlan, startAdjust, hitlDecide, checkHitlStatus,
+      switchView, refreshHistory, loadHistory, deleteHistory, goToPlanWithHistory,
     };
   }
 }).mount("#app");
+
+// 每次规划/调整结束后检查 HITL
+const origHandlePlan = null;
 </script>
 </body>
 </html>

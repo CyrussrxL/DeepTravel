@@ -85,5 +85,8 @@ class TravelState(TypedDict, total=False):
     next_node: Annotated[Stage, _override_reducer]
     final_plan: Annotated[str, _override_reducer]
 
+    # HITL 状态标记（waiting / resolved_approve / resolved_revise / 空）
+    hitl_status: Annotated[str, _override_reducer]
+
     # 所有 Agent 子报告的汇总（便于持久化 & 历史检索）
     sub_reports: Annotated[list[dict], _append_reducer]

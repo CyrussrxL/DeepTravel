@@ -32,7 +32,7 @@ def get_llm():
        （qwen3.8 新系列模型必须走 compatible-mode，旧 ChatTongyi 端点不认）
     3. OPENAI_API_KEY 兜底
     """
-    if _mock_flag:
+    if is_mock_mode():
         raise RuntimeError("MOCK_LLM=true, skip real LLM call")
 
     from langchain_openai import ChatOpenAI
@@ -64,7 +64,7 @@ def get_llm():
 
 
 def is_mock_mode() -> bool:
-    return _mock_flag
+    return os.getenv("MOCK_LLM", "false").lower() in ("true", "1", "yes")
 
 
 # --------- 消息提取 ---------

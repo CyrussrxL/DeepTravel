@@ -69,13 +69,14 @@ def hitl_node(state: TravelState) -> dict:
     """
     人工审核节点。
 
-    这个节点只是把 state 标记为 "等待人工决策"。
-    真正的决策是通过 /api/hitl/approve 或 /api/hitl/revise 来恢复执行。
+    hitl 是一个"暂停点"——执行完这个节点后图就停止了（next_node='end'）。
+    用户通过 /api/hitl/{thread_id} POST 注入人工决策，
+    LangGraph 会从 checkpoint 恢复，带着新 state 继续执行。
     """
     print(f"[HITL] 会话等待人工审核 — revision_count={state.get('revision_count',0)}")
     return {
-        "next_node": "hitl",  # 暂停信号
-        "hitl_status": "waiting",  # 标记等待中
+        "next_node": "end",  # 停止图执行
+        "hitl_status": "waiting",  # 标记：前端显示审核面板
     }
 
 

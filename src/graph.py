@@ -73,27 +73,21 @@ from .hitl import hitl_node, hitl_gate_route
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = PROJECT_ROOT / "data" / "checkpoints.sqlite"
 
-# 全局 checkpointer 实例（SqliteSaver 是上下文管理器，需要 __enter__ 初始化）
-_checkpointer_instance = None
-
 
 def _get_checkpointer(db_path: str | None = None):
-    """获取（或初始化）全局 SqliteSaver 实例"""
-    global _checkpointer_instance
-    if _checkpointer_instance is not None:
-        return _checkpointer_instance
-
+    """每次新建 SqliteSaver + sqlite3.Connection；传 None 则不持久化"""
     import sqlite3
     from langgraph.checkpoint.sqlite import SqliteSaver
-    target = Path(db_path) if db_path else DB_PATH
 
-    if str(target) == ":memory:":
+    if db_path is None:
+        db_path = str(DB_PATH)
+
+    if str(db_path) == ":memory:":
         conn = sqlite3.connect(":memory:", check_same_thread=False)
     else:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(target), check_same_thread=False)
-    _checkpointer_instance = SqliteSaver(conn)
-    return _checkpointer_instance
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    return SqliteSaver(conn)
 
 
 def build_graph(checkpointer_path: str | None = None):
@@ -129,11 +123,12 @@ def build_graph(checkpointer_path: str | None = None):
     }
 
     # 除了 review，其他节点用 route_decision
+    # hitl 节点自己返回 next_node='end'，route_decision 自然走 END
     for node_name in ("coordinator", "itinerary", "budget", "safety", "integrate", "hitl"):
         sg.add_conditional_edges(
             source=node_name,
             path=route_decision,
-            path_map={**PATH_MAP, "hitl": "hitl"},
+            path_map=PATH_MAP,
         )
 
     # review → HITL gate 专用路由

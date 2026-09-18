@@ -357,7 +357,6 @@ def itinerary_node(state: dict[str, Any]) -> dict[str, Any]:
     ctx["city"] = city
     pois_text = ""
     if city:
-        print(f"  [itinerary] 高德地图搜索 {city} POI...")
         all_pois = []
         for kw in ["景点", "博物馆", "美食"]:
             all_pois.extend(search_pois(kw, city, limit=6))
@@ -366,7 +365,6 @@ def itinerary_node(state: dict[str, Any]) -> dict[str, Any]:
             if p["name"] not in seen:
                 seen.add(p["name"]); uniq.append(p)
         pois_text = _pois_to_text(uniq[:12])
-        print(f"  [itinerary] 搜到 {len(uniq)} 个 POI" if uniq else "  [itinerary] 未搜到 POI")
 
     output = _call_or_mock(
         "",
