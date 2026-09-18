@@ -189,7 +189,7 @@ def get_weather(city_location: str) -> dict | None:
             "path": loc.get("path", ""),
             "text": now["text"],
             "temperature": now["temperature"],
-            "humidity": now["humidity"],
+            "humidity": now.get("humidity", ""),
             "wind_direction": now.get("wind_direction", ""),
             "wind_speed": now.get("wind_speed", ""),
             "last_update": results[0].get("last_update", ""),

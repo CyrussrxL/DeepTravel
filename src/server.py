@@ -16,18 +16,19 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
-from .graph import build_graph
+from .graph import build_graph, list_sessions, get_session_state
 
 load_dotenv()
 
@@ -103,7 +104,14 @@ AGENT_META = {
 
 class PlanRequest(BaseModel):
     user_input: str
-    mock: bool = False  # 是否强制 mock（忽略 .env 里的 MOCK_LLM）
+    mock: bool = False
+    thread_id: str | None = None  # 可选：恢复已有会话继续
+
+
+class AdjustRequest(BaseModel):
+    thread_id: str                # 必须：要调整的会话
+    modify_request: str           # 用户修改请求
+    mock: bool = False
 
 
 # --------- 辅助：把 LangGraph 事件转为 SSE ---------
@@ -163,6 +171,10 @@ async def plan(req: PlanRequest) -> StreamingResponse:
 
     async def generate() -> AsyncGenerator[str, None]:
         graph = build_graph()
+        # 为每次请求分配 thread_id（用于持久化）
+        thread_id = req.thread_id or f"deeptravel-{uuid.uuid4().hex[:12]}"
+        config = {"configurable": {"thread_id": thread_id}}
+
         initial_state = {
             "messages": [HumanMessage(content=req.user_input)],
             "revision_count": 0,
@@ -176,6 +188,7 @@ async def plan(req: PlanRequest) -> StreamingResponse:
         # 1. 发送 start 事件
         start_evt = {
             "type": "start",
+            "thread_id": thread_id,
             "user_input": req.user_input,
             "agents": [
                 {"node": name, **AGENT_META[name]}
@@ -185,9 +198,9 @@ async def plan(req: PlanRequest) -> StreamingResponse:
         }
         yield f"data: {json.dumps(start_evt, ensure_ascii=False)}\n\n"
 
-        # 2. 逐节点 stream
+        # 2. 逐节点 stream（带 config 持久化到 SQLite）
         try:
-            for event in graph.stream(initial_state):
+            for event in graph.stream(initial_state, config):
                 for node_name, state_update in event.items():
                     node_start = time.time()
 
@@ -228,6 +241,7 @@ async def plan(req: PlanRequest) -> StreamingResponse:
         # 3. done 事件
         done_evt = {
             "type": "done",
+            "thread_id": thread_id,
             "final_plan": final_plan,
             "sub_reports": all_sub_reports,
             "total_ms": int((time.time() - total_start) * 1000),
@@ -255,6 +269,238 @@ def health():
         "mock_mode": mock,
         "model": os.getenv("DASHSCOPE_MODEL", "qwen3.8-27b"),
     }
+
+
+# --------- 会话持久化 API ---------
+
+@app.get("/api/sessions")
+def sessions_list():
+    """列出所有持久化会话"""
+    sessions = list_sessions()
+    return {"count": len(sessions), "sessions": sessions}
+
+
+@app.get("/api/sessions/{thread_id}")
+def session_state(thread_id: str):
+    """获取某个会话的最新 state"""
+    state = get_session_state(thread_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"会话 {thread_id} 未找到")
+    return state
+
+
+@app.delete("/api/sessions/{thread_id}")
+def session_delete(thread_id: str):
+    """删除某个会话"""
+    import sqlite3
+    from .graph import DB_PATH
+    if not DB_PATH.exists():
+        return {"ok": True}
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,))
+        conn.execute("DELETE FROM writes WHERE thread_id = ?", (thread_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "thread_id": thread_id}
+
+
+# --------- 调整子图 API ---------
+
+@app.post("/api/adjust")
+async def adjust(req: AdjustRequest) -> StreamingResponse:
+    """
+    交互式调整已有方案。
+
+    流程：
+    1. 从 checkpoint 恢复 thread_id 对应的完整 state
+    2. LLM 分析 modify_request → 决定重跑起点
+    3. 裁剪后的子图只跑受影响节点
+    4. 新结果写回同一 thread_id 的 checkpoint
+    """
+    if req.mock:
+        os.environ["MOCK_LLM"] = "true"
+    else:
+        os.environ.pop("MOCK_LLM", None)
+
+    from .adjust import run_adjust, determine_adjust_start
+
+    async def generate() -> AsyncGenerator[str, None]:
+        total_start = time.time()
+
+        # 1. start 事件：先分析影响范围（用 full_graph 恢复 state）
+        try:
+            from .graph import build_graph
+            full_graph = build_graph()
+            state_obj = full_graph.get_state({"configurable": {"thread_id": req.thread_id}})
+            if state_obj is None:
+                raise HTTPException(status_code=404, detail=f"会话 {req.thread_id} 不存在")
+
+            original_state = dict(state_obj.values)
+            start_node = determine_adjust_start(original_state, req.modify_request)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            err_evt = {"type": "error", "message": f"恢复 state 失败: {exc}"}
+            yield f"data: {json.dumps(err_evt, ensure_ascii=False)}\n\n"
+            return
+
+        start_evt = {
+            "type": "start_adjust",
+            "thread_id": req.thread_id,
+            "modify_request": req.modify_request,
+            "start_node": start_node,
+            "mock": req.mock or os.getenv("MOCK_LLM", "false").lower() in ("true", "1", "yes"),
+        }
+        yield f"data: {json.dumps(start_evt, ensure_ascii=False)}\n\n"
+
+        # 2. 执行裁剪后的子图
+        all_sub_reports: list[dict] = []
+        final_plan = ""
+        last_revision = 0
+
+        try:
+            from .adjust import build_adjust_graph
+            adjust_graph = build_adjust_graph(start_node)
+            config = {"configurable": {"thread_id": req.thread_id}}
+
+            # 准备 adjust state
+            from langchain_core.messages import HumanMessage
+            adjust_state = dict(original_state)
+            adjust_state["messages"] = list(original_state.get("messages", [])) + [
+                HumanMessage(content=f"[用户调整] {req.modify_request}")
+            ]
+            if start_node == "coordinator":
+                adjust_state["user_request"] = req.modify_request
+            adjust_state["revision_count"] = 0
+            adjust_state["review_status"] = "pending"
+
+            for event in adjust_graph.stream(adjust_state, config):
+                for node_name, state_update in event.items():
+                    if "sub_reports" in state_update:
+                        all_sub_reports.extend(state_update["sub_reports"])
+
+                    cur_rev = state_update.get("revision_count", 0)
+                    if cur_rev > last_revision:
+                        revise_evt = {"type": "revise", "from_node": "review", "to_node": start_node, "count": cur_rev}
+                        yield f"data: {json.dumps(revise_evt, ensure_ascii=False)}\n\n"
+                    last_revision = cur_rev
+
+                    if "final_plan" in state_update:
+                        final_plan = state_update["final_plan"]
+
+                    node_evt = _event_from_node(node_name, state_update, 0)
+                    yield f"data: {json.dumps(node_evt, ensure_ascii=False)}\n\n"
+
+                    if state_update.get("next_node") == "end":
+                        break
+
+        except Exception as exc:
+            err_evt = {"type": "error", "message": str(exc)}
+            yield f"data: {json.dumps(err_evt, ensure_ascii=False)}\n\n"
+            return
+
+        done_evt = {
+            "type": "done",
+            "final_plan": final_plan,
+            "sub_reports": all_sub_reports,
+            "total_ms": int((time.time() - total_start) * 1000),
+            "revision_count": last_revision,
+            "adjusted": True,
+        }
+        yield f"data: {json.dumps(done_evt, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# --------- HITL 人工审核 API ---------
+
+class HitlDecisionRequest(BaseModel):
+    decision: str  # "approve" | "revise"
+    note: str = ""  # 可选：人工附加说明
+
+
+@app.post("/api/hitl/{thread_id}")
+async def hitl_decision(thread_id: str, req: HitlDecisionRequest) -> StreamingResponse:
+    """
+    人工审核决策。
+
+    从 checkpoint 恢复会话 → 注入人工决策 → 继续执行图。
+    """
+    from .graph import build_graph
+    from .hitl import hitl_approve_state, hitl_revise_state
+
+    graph = build_graph()
+    config = {"configurable": {"thread_id": thread_id}}
+    state_obj = graph.get_state(config)
+    if state_obj is None:
+        raise HTTPException(status_code=404, detail=f"会话 {thread_id} 不存在")
+
+    async def generate() -> AsyncGenerator[str, None]:
+        total_start = time.time()
+
+        # 1. 注入人工决策
+        if req.decision == "approve":
+            human_update = hitl_approve_state(dict(state_obj.values))
+        elif req.decision == "revise":
+            human_update = hitl_revise_state(dict(state_obj.values))
+            # 附带人工 note 到 messages
+            from langchain_core.messages import HumanMessage
+            if req.note:
+                human_update["messages"] = [HumanMessage(content=f"[人工修订] {req.note}")]
+        else:
+            err_evt = {"type": "error", "message": f"无效决策: {req.decision}，应为 approve 或 revise"}
+            yield f"data: {json.dumps(err_evt, ensure_ascii=False)}\n\n"
+            return
+
+        hitl_start_evt = {
+            "type": "hitl_decision",
+            "thread_id": thread_id,
+            "decision": req.decision,
+            "note": req.note,
+        }
+        yield f"data: {json.dumps(hitl_start_evt, ensure_ascii=False)}\n\n"
+
+        # 2. 从中断处继续
+        all_sub_reports: list[dict] = []
+        final_plan = ""
+        try:
+            for event in graph.stream(None, config, input=human_update):
+                for node_name, state_update in event.items():
+                    if "sub_reports" in state_update:
+                        all_sub_reports.extend(state_update["sub_reports"])
+                    if "final_plan" in state_update:
+                        final_plan = state_update["final_plan"]
+
+                    node_evt = _event_from_node(node_name, state_update, 0)
+                    yield f"data: {json.dumps(node_evt, ensure_ascii=False)}\n\n"
+
+                    if state_update.get("next_node") == "end":
+                        break
+        except Exception as exc:
+            err_evt = {"type": "error", "message": str(exc)}
+            yield f"data: {json.dumps(err_evt, ensure_ascii=False)}\n\n"
+            return
+
+        done_evt = {
+            "type": "done",
+            "final_plan": final_plan,
+            "sub_reports": all_sub_reports,
+            "total_ms": int((time.time() - total_start) * 1000),
+            "from_hitl": True,
+        }
+        yield f"data: {json.dumps(done_evt, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # --------- 静态文件挂载（前端） ---------

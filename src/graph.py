@@ -45,6 +45,8 @@ DeepTravel 六阶段有向图构建
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from langgraph.graph import StateGraph, END
 
 from .state import TravelState
@@ -65,27 +67,58 @@ from .agents.nodes import (
     review_node,
     integrate_node,
 )
+from .hitl import hitl_node, hitl_gate_route
+
+# SQLite 持久化文件位置
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DB_PATH = PROJECT_ROOT / "data" / "checkpoints.sqlite"
+
+# 全局 checkpointer 实例（SqliteSaver 是上下文管理器，需要 __enter__ 初始化）
+_checkpointer_instance = None
 
 
-def build_graph():
-    """构建并返回编译后的 LangGraph StateGraph"""
+def _get_checkpointer(db_path: str | None = None):
+    """获取（或初始化）全局 SqliteSaver 实例"""
+    global _checkpointer_instance
+    if _checkpointer_instance is not None:
+        return _checkpointer_instance
 
-    # 1. 初始化图
+    import sqlite3
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    target = Path(db_path) if db_path else DB_PATH
+
+    if str(target) == ":memory:":
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(target), check_same_thread=False)
+    _checkpointer_instance = SqliteSaver(conn)
+    return _checkpointer_instance
+
+
+def build_graph(checkpointer_path: str | None = None):
+    """
+    构建并返回编译后的 LangGraph StateGraph（带 SQLite Checkpointer + HITL 节点）
+
+    架构更新：review 之后走 hitl_gate 条件路由
+      review → HITL gate ─┬─ hitl（等待人工）
+                          ├─ itinerary（自动 revise）
+                          └─ integrate（自动 approve）
+    """
     sg = StateGraph(TravelState)
 
-    # 2. 添加六个节点
+    # 七个节点（新增 hitl）
     sg.add_node("coordinator", coordinator_node)
     sg.add_node("itinerary", itinerary_node)
     sg.add_node("budget", budget_node)
     sg.add_node("safety", safety_node)
     sg.add_node("review", review_node)
+    sg.add_node("hitl", hitl_node)
     sg.add_node("integrate", integrate_node)
 
-    # 3. 设置起点
     sg.set_entry_point("coordinator")
 
-    # 4. 为每个节点添加条件边（统一路由）
-    # path_map: 将 next_node 字符串映射到实际图节点名（或 END）
+    # 通用路由 path_map
     PATH_MAP = {
         ROUTE_ITINERARY: "itinerary",
         ROUTE_BUDGET: "budget",
@@ -95,12 +128,72 @@ def build_graph():
         ROUTE_END: END,
     }
 
-    for node_name in ("coordinator", "itinerary", "budget", "safety", "review", "integrate"):
+    # 除了 review，其他节点用 route_decision
+    for node_name in ("coordinator", "itinerary", "budget", "safety", "integrate", "hitl"):
         sg.add_conditional_edges(
             source=node_name,
             path=route_decision,
-            path_map=PATH_MAP,
+            path_map={**PATH_MAP, "hitl": "hitl"},
         )
 
-    # 5. 编译返回
-    return sg.compile()
+    # review → HITL gate 专用路由
+    sg.add_conditional_edges(
+        source="review",
+        path=hitl_gate_route,
+        path_map={
+            "hitl": "hitl",
+            "itinerary": "itinerary",
+            "integrate": "integrate",
+        },
+    )
+
+    checkpointer = _get_checkpointer(checkpointer_path)
+    return sg.compile(checkpointer=checkpointer)
+
+
+def list_sessions():
+    """列出所有持久化会话（从 SQLite checkpoints 表检索）"""
+    import sqlite3
+
+    db_path = DB_PATH
+    if not db_path.exists():
+        return []
+
+    sessions = []
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT thread_id, MIN(checkpoint_id) as first, MAX(checkpoint_id) as last "
+            "FROM checkpoints GROUP BY thread_id ORDER BY first DESC LIMIT 50"
+        ).fetchall()
+        for row in rows:
+            sessions.append({
+                "thread_id": row[0],
+                "checkpoint_ids": [row[1], row[2]],
+            })
+    finally:
+        conn.close()
+    return sessions
+
+
+def get_session_state(thread_id: str) -> dict | None:
+    """从持久化存储中检索某个会话的最新 state"""
+    graph = build_graph()
+    try:
+        config = {"configurable": {"thread_id": thread_id}}
+        state = graph.get_state(config)
+        if state is None:
+            return None
+        values = state.values
+        # 只返回前端关心的字段
+        return {
+            "thread_id": thread_id,
+            "messages": [{"role": m.type, "content": m.content[:200] + "..." if len(m.content) > 200 else m.content}
+                         for m in values.get("messages", [])],
+            "user_request": values.get("user_request", ""),
+            "final_plan": values.get("final_plan", ""),
+            "revision_count": values.get("revision_count", 0),
+            "last_node": state.next[0] if state.next else "end",
+        }
+    except Exception:
+        return None
