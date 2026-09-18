@@ -1,15 +1,18 @@
 """
-DeepTravel 六阶段 Agent 节点
+DeepTravel - 所有 Agent 节点实现
 
-每个节点职责：
-1. 读取 state（主要是 messages + user_request）
-2. 调用 LLM（或 mock）产出结构化子报告
-3. 返回 partial state：写入对应报告字段 + sub_reports + next_node
+Agent 架构：
+  coordinator → itinerary → budget → safety → review ─┬─→ integrate → END
+                                                       └─→ itinerary（REVISE 回退）
 
-设计原则：
-- 节点是纯函数风格：输入 state dict，输出 partial state dict
-- 节点绝不直接路由，只写 next_node，由 graph.py 中的 route_decision 统一调度
-- System Prompt 约束输出格式，LLM 编造时 mock 兜底
+每个节点：
+1. 可选调用外部 API（高德地图 POI / 心知天气）
+2. 调用 LLM（或 mock 模式下用纯函数生成一致性 mock 输出）
+3. 返回 state update + sub_reports 条目
+
+Mock 一致性设计：
+  所有节点从同一份 _parse_user_input(raw_input) 提取的 ctx（城市/天数/人数/预算/偏好）
+  动态生成输出，避免了早期硬编码常量导致跨节点数据不一致的问题。
 """
 
 from __future__ import annotations
@@ -17,24 +20,26 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from .common import (
     get_llm,
     is_mock_mode,
     extract_last_user_text,
+    ROUTE_END,
     ROUTE_ITINERARY,
     ROUTE_BUDGET,
     ROUTE_SAFETY,
     ROUTE_REVIEW,
     ROUTE_INTEGRATE,
-    ROUTE_END,
 )
 from .tools import search_pois, get_weather, get_weather_daily
 
 
-# 中国主要城市名表（用于从目的地字符串中提取纯城市名）
-# 覆盖直辖市 + 省会 + 热门旅游城市
+# ==========================================================================
+# 城市名表 + 用户输入解析（用于 mock 动态生成）
+# ==========================================================================
+
 _CITY_NAMES = [
     "北京", "上海", "天津", "重庆",
     "广州", "深圳", "成都", "杭州", "武汉", "南京", "西安", "长沙",
@@ -47,25 +52,64 @@ _CITY_NAMES = [
 ]
 
 
-def extract_city_name(text: str) -> str:
-    """
-    从归一化需求文本中提取目的地城市名。
+def _parse_user_input(text: str) -> dict:
+    """从用户原始输入提取 mock 生成所需的字段。"""
+    result = {"city": "", "days": 3, "nights": 2, "people": 2, "budget": 5000, "preference": "休闲观光"}
 
-    匹配 "目的地：XXX" 或直接在全文中搜索已知城市名。
-    先匹配直辖市/省会/热门城市（优先长名如"呼和浩特"再短名）。
-    """
-    # 先看是否有 "目的地：" 这样的行
-    m = re.search(r"目的地[：:]\s*([^\n【]+)", text)
+    # 城市
+    for city in sorted(_CITY_NAMES, key=len, reverse=True):
+        if city in text:
+            result["city"] = city
+            break
+    if not result["city"]:
+        m = re.search(r"去([\u4e00-\u9fff]{2,6})(?:旅游|旅行|玩|度假)", text)
+        result["city"] = m.group(1) if m else "目的地"
+
+    # 天数/晚数
+    m = re.search(r"(\d+)\s*天(\d+)\s*晚", text)
     if m:
-        target = m.group(1).strip()
+        result["days"], result["nights"] = int(m.group(1)), int(m.group(2))
     else:
-        target = text
+        m = re.search(r"(\d+)\s*天", text)
+        if m:
+            d = int(m.group(1))
+            result["days"], result["nights"] = d, max(1, d - 1)
 
-    # 关键词匹配（长名优先，避免 "呼和" 先匹配了 "呼和浩特"）
+    # 人数
+    m = re.search(r"(\d+)\s*个人", text)
+    if not m:
+        m = re.search(r"(\d+)\s*人", text)
+    if m:
+        result["people"] = int(m.group(1))
+    if "情侣" in text or "两口" in text:
+        result["people"] = 2
+    if "一个人" in text or "独自" in text or "单身" in text:
+        result["people"] = 1
+
+    # 预算
+    m = re.search(r"预算[^\d]*(\d+)", text)
+    if not m:
+        m = re.search(r"(\d+)\s*元", text)
+    if m:
+        result["budget"] = int(m.group(1))
+
+    # 偏好
+    for kw in ["亲子", "情侣", "背包", "商务", "美食", "自然", "文化", "历史",
+               "温泉", "海滩", "度假", "摄影", "登山", "熊猫"]:
+        if kw in text:
+            result["preference"] = kw
+            break
+
+    return result
+
+
+def extract_city_name(text: str) -> str:
+    """从归一化需求文本提取城市名。"""
+    m = re.search(r"目的地[：:]\s*([^\n【]+)", text)
+    target = m.group(1).strip() if m else text
     for city in sorted(_CITY_NAMES, key=len, reverse=True):
         if city in target:
             return city
-    # 兜底：取 "目的地" 行第一个中文词组
     for line in text.splitlines():
         if "目的地" in line:
             parts = re.findall(r"[\u4e00-\u9fff]+", line)
@@ -74,320 +118,8 @@ def extract_city_name(text: str) -> str:
     return ""
 
 
-def _pois_to_text(pois: list[dict]) -> str:
-    """把高德 POI 列表格式化为可读文本，供 LLM 拼入 prompt"""
-    if not pois:
-        return ""
-    lines = ["【高德地图真实 POI 数据】"]
-    for i, p in enumerate(pois, 1):
-        addr = p.get("address", "")
-        ptype = p.get("type", "")
-        lines.append(f"{i}. {p['name']}（{ptype}）| 地址：{addr}")
-    return "\n".join(lines)
-
-
-def _weather_to_text(weather: dict | None, daily: list[dict] | None = None) -> str:
-    """把心知天气数据格式化为可读文本"""
-    parts = ["【心知天气真实数据】"]
-    if weather:
-        parts.append(f"📍 {weather['location']}（{weather.get('country','')}）")
-        parts.append(f"🌤 当前：{weather['text']}  {weather['temperature']}°C  湿度{weather['humidity']}%")
-        if weather.get("wind_direction"):
-            parts.append(f"💨 风：{weather['wind_direction']} {weather['wind_speed']}km/h")
-    if daily:
-        parts.append("📅 未来预报：")
-        for d in daily:
-            parts.append(f"  {d['date'][:10]}：{d['text_day']}/{d['text_night']}  {d['low']}~{d['high']}°C")
-    if not weather and not daily:
-        parts.append("（天气数据暂不可用，API 未返回有效结果）")
-    return "\n".join(parts)
-
-
-# ==========================================================================
-# Coordinator —— 需求归一化 & 任务拆解
-# ==========================================================================
-
-COORDINATOR_PROMPT = """\
-你是 DeepTravel 的旅行需求协调员。请从用户输入中提取并归一化以下关键信息：
-
-1. 目的地（城市/国家）
-2. 出行日期（起止）
-3. 出行人数
-4. 预算范围（总预算或人均）
-5. 旅行偏好（如：亲子、情侣、背包、商务、美食、自然风光等）
-6. 特殊需求（如：无障碍、宗教禁忌、过敏等）
-
-请以清晰的结构化文本输出归一化后的需求摘要。如果用户信息有缺失，请在输出中标注 "【缺失】"。
-"""
-
-MOCK_COORDINATOR_OUTPUT = """\
-## 归一化旅行需求
-- 目的地：日本东京
-- 出行日期：2026-11-01 至 2026-11-07（7天6晚）
-- 出行人数：2人（情侣）
-- 预算范围：总预算 ¥25,000
-- 旅行偏好：自然风光 + 美食 + 温泉
-- 特殊需求：【缺失】
-"""
-
-
-def coordinator_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Coordinator：归一化用户需求，设置 next_node='itinerary'"""
-    user_text = extract_last_user_text(state.get("messages", []))
-
-    output = _call_or_mock(
-        system_prompt=COORDINATOR_PROMPT,
-        user_text=user_text or "请为我规划一次旅行",
-        mock=MOCK_COORDINATOR_OUTPUT,
-        stage="coordinator",
-    )
-
-    return {
-        "user_request": output,
-        "next_node": ROUTE_ITINERARY,
-        "sub_reports": [{"agent": "coordinator", "report": output}],
-    }
-
-
-# ==========================================================================
-# Itinerary —— 行程规划
-# ==========================================================================
-
-ITINERARY_PROMPT = """\
-你是 DeepTravel 的行程规划专家。基于以下归一化需求，设计一份详细的每日行程：
-
-{user_request}
-
-{poi_context}
-
-要求：
-1. 每天包含：上午 / 下午 / 晚上 三段安排
-2. 优先从上面的【高德地图真实 POI 数据】中选择景点；如果 POI 为空则自行合理安排
-3. 每个景点/活动要具体（名称 + 简述 + 大致时长）
-4. 考虑景点间的距离和交通便利性
-5. 标注适合的用餐区域
-
-以 Markdown 格式输出完整日程。
-"""
-
-MOCK_ITINERARY_OUTPUT = """\
-## 成都 3天2晚 行程（真实 POI 参考）
-
-### Day 1 · 熊猫 & 宽窄巷子
-- 上午：抵达成都 → 入住春熙路附近酒店
-- 下午：成都大熊猫繁育研究基地（熊猫大道1375号，国家级景点） → 约3小时
-- 晚上：宽窄巷子景区（少城街道金河路口，特色商业街）晚餐 + 夜游
-
-### Day 2 · 锦里 & 武侯祠
-- 上午：武侯祠博物馆 → 锦里古街
-- 下午：杜甫草堂博物馆
-- 晚上：九眼桥酒吧街 / 合江亭
-
-### Day 3 · 青城山 / 都江堰（二选一）& 返程
-- 上午：都江堰景区（国家5A）或青城山一日游
-- 下午：返程回市区 → 机场
-"""
-
-
-def itinerary_node(state: dict[str, Any]) -> dict[str, Any]:
-    """
-    Itinerary：先用高德地图搜索目的地 POI，再让 LLM 生成每日行程。
-
-    真实 API 调用失败时（如海外城市权限不足），POI 列表为空，
-    LLM 会退化为纯文本规划（prompt 里有说明）。
-    """
-    user_request = state.get("user_request", "")
-    city = extract_city_name(user_request)
-
-    # 真实 POI 搜索（同时搜景点/美食/地标三个关键词）
-    pois_text = ""
-    if city:
-        print(f"  [itinerary] 正在用高德地图搜索 {city} 的 POI...")
-        all_pois = []
-        for kw in ["景点", "博物馆", "美食"]:
-            all_pois.extend(search_pois(kw, city, limit=6))
-        # 去重（按 name）
-        seen = set()
-        unique = []
-        for p in all_pois:
-            if p["name"] not in seen:
-                seen.add(p["name"])
-                unique.append(p)
-        pois_text = _pois_to_text(unique[:12])
-        if unique:
-            print(f"  [itinerary] 搜到 {len(unique)} 个真实 POI")
-        else:
-            print(f"  [itinerary] 未搜到 POI（可能是海外城市或 API 权限问题）")
-
-    output = _call_or_mock(
-        system_prompt="",
-        user_text=ITINERARY_PROMPT.format(
-            user_request=user_request,
-            poi_context=pois_text,
-        ),
-        mock=MOCK_ITINERARY_OUTPUT,
-        stage="itinerary",
-    )
-
-    return {
-        "itinerary": output,
-        "next_node": ROUTE_BUDGET,
-        "sub_reports": [{"agent": "itinerary", "report": output, "city": city}],
-    }
-
-
-# ==========================================================================
-# Budget —— 预算估算
-# ==========================================================================
-
-BUDGET_PROMPT = """\
-你是 DeepTravel 的预算专家。基于以下行程，按类别拆分估算总预算：
-
-## 归一化需求
-{user_request}
-
-## 已规划行程
-{itinerary}
-
-请按以下类别估算（人民币）：
-1. 交通（国际机票 + 当地交通）
-2. 住宿（每晚均价 × 晚数）
-3. 餐饮（每天人均 × 天数 × 人数）
-4. 门票/活动
-5. 其他（购物、应急预留 10%）
-
-输出 Markdown 表格形式，并给出总预算和与用户预算的对比。
-"""
-
-MOCK_BUDGET_OUTPUT = """\
-## 预算估算（¥）
-
-| 类别 | 估算（人均） | 估算（2人） |
-|------|------------|------------|
-| 国际机票（上海⇄东京） | 3,500 | 7,000 |
-| 当地交通（JR Pass + 地铁） | 1,200 | 2,400 |
-| 住宿（6晚 × ¥1,200/晚） | 3,600 | 7,200 |
-| 餐饮（7天 × ¥400/天） | 2,800 | 5,600 |
-| 门票/活动 | 800 | 1,600 |
-| 其他（预留 10%） | 1,190 | 2,380 |
-| **合计** | **13,090** | **26,180** |
-
-> 用户预算 ¥25,000，超出约 ¥1,180（+4.7%），可考虑调整住宿档次或减少一晚温泉旅馆。
-"""
-
-
-def budget_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Budget：预算估算，设置 next_node='safety'"""
-    output = _call_or_mock(
-        system_prompt="",
-        user_text=BUDGET_PROMPT.format(
-            user_request=state.get("user_request", ""),
-            itinerary=state.get("itinerary", ""),
-        ),
-        mock=MOCK_BUDGET_OUTPUT,
-        stage="budget",
-    )
-
-    return {
-        "budget": output,
-        "next_node": ROUTE_SAFETY,
-        "sub_reports": [{"agent": "budget", "report": output}],
-    }
-
-
-# ==========================================================================
-# Safety —— 安全评估
-# ==========================================================================
-
-SAFETY_PROMPT = """\
-你是 DeepTravel 的旅行安全顾问。请评估以下行程的安全风险点并给出建议：
-
-## 行程概览
-{itinerary}
-
-{weather_context}
-
-请结合上面的天气真实数据重点关注：
-1. 目的地当前天气形势，是否需要调整行程安排（暴雨/台风/极端高温等）
-2. 安全形势（治安、自然灾害、公共卫生）
-3. 行程中的高风险地点或活动
-4. 紧急联系方式与保险建议
-5. 个人特殊需求（如过敏、慢性病）的应对
-
-输出简洁的安全清单格式。
-"""
-
-MOCK_SAFETY_OUTPUT = """\
-## 旅行安全评估
-
-### ✅ 整体风险：低
-目的地治安良好，自然灾害概率低。
-
-### ⚠️ 天气关注
-- 当前多云 22°C，湿度适中，适合户外活动
-- 出行前再次确认未来 3 天预报
-
-### 📋 紧急信息
-- 中国报警：110；急救：120
-- 推荐购买：国内旅游保险
-
-### 💊 个人事项
-- 常规常备药（感冒药、肠胃药、创可贴）即可
-"""
-
-
-def safety_node(state: dict[str, Any]) -> dict[str, Any]:
-    """
-    Safety：先调心知天气获取目的地天气，再让 LLM 生成安全评估。
-    天气 API 不通时降级为常规安全建议。
-    """
-    # 从 sub_reports 中找到 itinerary 节点的 city 字段（sub_reports 是累加列表）
-    city = ""
-    for sub in state.get("sub_reports", []):
-        if sub.get("agent") == "itinerary" and sub.get("city"):
-            city = sub["city"]
-            break
-    # 兜底：从 user_request 文本提取
-    if not city:
-        city = extract_city_name(state.get("user_request", ""))
-
-    weather_text = ""
-    if city:
-        # 心知天气用拼音（如 "成都" → "chengdu"）
-        pinyin = _city_pinyin(city)
-        if pinyin:
-            print(f"  [safety] 正在用心知天气查询 {city}({pinyin}) 的天气...")
-            weather = get_weather(pinyin)
-            daily = get_weather_daily(pinyin, days=3)
-            weather_text = _weather_to_text(weather, daily)
-            if weather:
-                print(f"  [safety] 天气查询成功：{weather['text']} {weather['temperature']}°C")
-            else:
-                print(f"  [safety] 天气查询失败（可能是海外城市或权限问题）")
-
-    output = _call_or_mock(
-        system_prompt="",
-        user_text=SAFETY_PROMPT.format(
-            itinerary=state.get("itinerary", ""),
-            weather_context=weather_text,
-        ),
-        mock=MOCK_SAFETY_OUTPUT,
-        stage="safety",
-    )
-
-    return {
-        "safety_report": output,
-        "next_node": ROUTE_REVIEW,
-        "sub_reports": [{"agent": "safety", "report": output}],
-    }
-
-
 def _city_pinyin(city_name: str) -> str:
-    """
-    中国城市名 → 心知天气拼音 location 映射表。
-    心知天气 v3 的 location 参数要求城市拼音（小写，无空格）。
-    覆盖主要热门城市 + 直辖市。
-    """
+    """中国城市名 → 心知天气拼音"""
     mapping = {
         "北京": "beijing", "上海": "shanghai", "天津": "tianjin", "重庆": "chongqing",
         "广州": "guangzhou", "深圳": "shenzhen", "成都": "chengdu", "杭州": "hangzhou",
@@ -405,11 +137,347 @@ def _city_pinyin(city_name: str) -> str:
 
 
 # ==========================================================================
-# Review —— 方案审核 & 修订判断
+# Mock 内容动态生成器
+# ==========================================================================
+
+_CITY_POI = {
+    "成都": [("熊猫基地", "成都大熊猫繁育研究基地", "熊猫大道1375号"),
+             ("宽窄巷子", "宽窄巷子景区", "少城街道金河路口"),
+             ("锦里古街", "锦里古街", "武侯祠大街中段"),
+             ("武侯祠", "武侯祠博物馆", "武侯祠大街231号"),
+             ("杜甫草堂", "杜甫草堂博物馆", "青华路38号"),
+             ("都江堰", "都江堰景区", "都江堰市"),
+             ("青城山", "青城山风景区", "都江堰市青城山镇"),
+             ("春熙路", "春熙路步行街", "锦江区"),
+             ("九眼桥", "九眼桥酒吧街", "锦江区九眼桥")],
+    "北京": [("故宫", "故宫博物院", "景山前街4号"),
+             ("长城", "八达岭长城", "延庆区G6高速58号出口"),
+             ("颐和园", "颐和园", "新建宫门路19号"),
+             ("天坛", "天坛公园", "永定门内东街中里1号"),
+             ("天安门", "天安门广场", "东长安街"),
+             ("南锣鼓巷", "南锣鼓巷", "东城区"),
+             ("什刹海", "什刹海", "西城区"),
+             ("环球影城", "北京环球影城", "通州区")],
+    "西安": [("兵马俑", "秦始皇兵马俑博物馆", "临潼区秦陵北路"),
+             ("大雁塔", "大雁塔·大慈恩寺", "雁塔区雁祥路1号"),
+             ("华清池", "华清宫", "临潼区华清路38号"),
+             ("城墙", "西安城墙", "碑林区南大街1号"),
+             ("回民街", "回民街", "莲湖区北院门"),
+             ("钟鼓楼", "钟鼓楼", "碑林区")],
+    "三亚": [("亚龙湾", "亚龙湾国家旅游度假区", "吉阳区"),
+             ("天涯海角", "天涯海角游览区", "天涯区"),
+             ("蜈支洲岛", "蜈支洲岛", "海棠区"),
+             ("南山", "南山文化旅游区", "崖州区"),
+             ("大东海", "大东海旅游区", "吉阳区")],
+    "杭州": [("西湖", "西湖景区", "西湖区"),
+             ("灵隐寺", "灵隐寺", "西湖区灵隐路法云弄1号"),
+             ("千岛湖", "千岛湖", "淳安县"),
+             ("宋城", "宋城景区", "之江路148号"),
+             ("西溪湿地", "西溪国家湿地公园", "西湖区")],
+}
+
+
+def _mock_coordinator(ctx: dict) -> str:
+    c, d, n = ctx["city"], ctx["days"], ctx["nights"]
+    p, b = ctx["people"], ctx["budget"]
+    pref = ctx["preference"]
+    label = "情侣" if p == 2 else "独自" if p == 1 else f"{p}人团队"
+    return (f"## 归一化旅行需求\n"
+            f"- 目的地：{c}\n"
+            f"- 出行日期：【用户指定起止】（{d}天{n}晚）\n"
+            f"- 出行人数：{p}人（{label}）\n"
+            f"- 预算范围：总预算 ¥{b:,}\n"
+            f"- 旅行偏好：{pref}\n"
+            f"- 特殊需求：【缺失】")
+
+
+def _mock_itinerary(ctx: dict) -> str:
+    c = ctx["city"]
+    d = ctx["days"]
+    pois = _CITY_POI.get(c, [
+        ("景点1", f"{c}热门景点", "市中心"),
+        ("景点2", f"{c}特色街区", "老城区"),
+        ("景点3", f"{c}博物馆", "文化区"),
+    ])
+    lines = [f"## {c} {d}天行程（POI 参考）\n"]
+    for i in range(d):
+        a = pois[i % len(pois)]
+        b = pois[(i + 2) % len(pois)]
+        lines.append(f"### Day {i+1} · {a[0]} & {b[0]}")
+        lines.append(f"- 上午：抵达/入住 → {a[1]}（{a[2]}）→ 约3小时")
+        lines.append(f"- 下午：{b[1]} → 约2-3小时")
+        lines.append(f"- 晚上：{c}本地美食 + 夜游\n")
+    return "\n".join(lines)
+
+
+def _mock_budget(ctx: dict) -> str:
+    b, p, n = ctx["budget"], ctx["people"], ctx["nights"]
+    c = ctx["city"]
+    rows = [
+        f"## 预算估算（¥）\n",
+        "| 类别 | 估算（人均） | 估算（"+str(p)+"人合计） |",
+        "|------|------------|------------------------|",
+        f"| 交通（往返 + 当地） | {int(b*0.15/p):,} | {int(b*0.15):,} |",
+        f"| 住宿（{n}晚） | {int(b*0.25/p):,} | {int(b*0.25):,} |",
+        f"| 餐饮 | {int(b*0.25/p):,} | {int(b*0.25):,} |",
+        f"| 门票/活动 | {int(b*0.15/p):,} | {int(b*0.15):,} |",
+        f"| 其他（预留 20%） | {int(b*0.20/p):,} | {int(b*0.20):,} |",
+        f"| **合计** | **{int(b/p):,}** | **{b:,}** |\n",
+        f"> ✅ 估算在用户预算 ¥{b:,} 范围内，比例合理。",
+    ]
+    return "\n".join(rows)
+
+
+def _mock_safety(ctx: dict) -> str:
+    c = ctx["city"]
+    return (f"## {c} 旅行安全评估\n\n"
+            f"### ✅ 整体风险：低\n{c}治安良好，自然灾害概率低。\n\n"
+            f"### ⚠️ 关注事项\n"
+            f"- 当前季节适合户外活动，建议备好防晒/雨具\n"
+            f"- 热门景点节假日人流密集，建议提前预约\n"
+            f"- 留意当地天气预警信息\n\n"
+            f"### 📋 紧急信息\n"
+            f"- 报警：110；急救：120\n"
+            f"- 推荐购买：国内旅游保险（含医疗紧急救援）\n\n"
+            f"### 💊 个人事项\n"
+            f"- 常规常备药（感冒药、肠胃药、创可贴）即可")
+
+
+def _mock_review(ctx: dict) -> str:
+    c = ctx["city"]
+    return f"[APPROVED]\n{c}行程完整覆盖需求，预算合理，安全评估充分。无需修订。"
+
+
+# ==========================================================================
+# API 辅助函数
+# ==========================================================================
+
+def _pois_to_text(pois: list[dict]) -> str:
+    if not pois:
+        return ""
+    lines = ["【高德地图真实 POI 数据】"]
+    for i, p in enumerate(pois, 1):
+        lines.append(f"{i}. {p['name']}（{p.get('type','')}）| 地址：{p.get('address','')}")
+    return "\n".join(lines)
+
+
+def _weather_to_text(weather: dict | None, daily: list[dict] | None = None) -> str:
+    parts = ["【心知天气真实数据】"]
+    if weather:
+        parts.append(f"📍 {weather['location']}  当前：{weather['text']}  {weather['temperature']}°C")
+    if daily:
+        parts.append("📅 未来预报：")
+        for d in daily:
+            parts.append(f"  {d['date'][:10]}：{d['text_day']}/{d['text_night']}  {d['low']}~{d['high']}°C")
+    if not weather and not daily:
+        parts.append("（天气数据暂不可用）")
+    return "\n".join(parts)
+
+
+# ==========================================================================
+# LLM 调用统一封装
+# ==========================================================================
+
+def _call_or_mock(system_prompt: str, user_text: str, mock: str, stage: str) -> str:
+    """mock 模式直接返回 mock；真实模式调 LLM，失败回退 mock。"""
+    if is_mock_mode():
+        return mock
+    try:
+        llm = get_llm()
+        messages = []
+        if system_prompt:
+            messages.append(SystemMessage(content=system_prompt))
+        messages.append(HumanMessage(content=user_text))
+        resp = llm.invoke(messages)
+        content = getattr(resp, "content", str(resp))
+        print(f"  [{stage}] LLM 返回 {len(content)} 字符")
+        return content
+    except Exception as exc:
+        print(f"  [{stage}] ⚠️ LLM 调用失败（{type(exc).__name__}），回退 mock 输出: {exc}")
+        return mock
+
+
+# ==========================================================================
+# Coordinator —— 需求归一化
+# ==========================================================================
+
+COORDINATOR_PROMPT = """\
+你是 DeepTravel 的旅行需求协调员。请从用户输入中提取并归一化以下关键信息：
+1. 目的地（城市/国家）
+2. 出行日期（起止）
+3. 出行人数
+4. 预算范围（总预算或人均）
+5. 旅行偏好（亲子/情侣/背包/商务/美食/自然风光 等）
+6. 特殊需求（无障碍/宗教禁忌/过敏 等）
+
+以清晰的结构化文本输出，信息缺失时标注 【缺失】。
+"""
+
+
+def coordinator_node(state: dict[str, Any]) -> dict[str, Any]:
+    """归一化用户需求 → itinerary"""
+    raw = extract_last_user_text(state.get("messages", [])) or "请为我规划一次旅行"
+    ctx = _parse_user_input(raw)
+    output = _call_or_mock(COORDINATOR_PROMPT, raw, _mock_coordinator(ctx), "coordinator")
+    return {
+        "user_request": output,
+        "next_node": ROUTE_ITINERARY,
+        "sub_reports": [{"agent": "coordinator", "report": output}],
+    }
+
+
+# ==========================================================================
+# Itinerary —— 行程规划（可选高德 POI）
+# ==========================================================================
+
+ITINERARY_PROMPT = """\
+你是 DeepTravel 的行程规划专家。基于归一化需求，设计每日行程：
+
+{user_request}
+
+{poi_context}
+
+要求：
+- 每天三段安排（上午/下午/晚上）
+- 优先从【高德地图真实 POI 数据】选择景点；POI 为空则自行合理安排
+- 景点名称 + 简述 + 大致时长 + 交通便利性
+- 标注适合的用餐区域
+
+以 Markdown 格式输出完整日程。
+"""
+
+
+def itinerary_node(state: dict[str, Any]) -> dict[str, Any]:
+    """先用高德地图搜索 POI，再生成行程 → budget"""
+    raw = extract_last_user_text(state.get("messages", [])) or state.get("user_request", "")
+    ctx = _parse_user_input(raw)
+
+    # 真实 POI
+    city = extract_city_name(state.get("user_request", "")) or ctx["city"]
+    ctx["city"] = city
+    pois_text = ""
+    if city:
+        print(f"  [itinerary] 高德地图搜索 {city} POI...")
+        all_pois = []
+        for kw in ["景点", "博物馆", "美食"]:
+            all_pois.extend(search_pois(kw, city, limit=6))
+        seen, uniq = set(), []
+        for p in all_pois:
+            if p["name"] not in seen:
+                seen.add(p["name"]); uniq.append(p)
+        pois_text = _pois_to_text(uniq[:12])
+        print(f"  [itinerary] 搜到 {len(uniq)} 个 POI" if uniq else "  [itinerary] 未搜到 POI")
+
+    output = _call_or_mock(
+        "",
+        ITINERARY_PROMPT.format(user_request=state.get("user_request", ""), poi_context=pois_text),
+        _mock_itinerary(ctx),
+        "itinerary",
+    )
+    return {
+        "itinerary": output,
+        "next_node": ROUTE_BUDGET,
+        "sub_reports": [{"agent": "itinerary", "report": output, "city": city}],
+    }
+
+
+# ==========================================================================
+# Budget —— 预算估算
+# ==========================================================================
+
+BUDGET_PROMPT = """\
+你是 DeepTravel 的预算专家。按类别拆分估算预算：
+
+## 归一化需求
+{user_request}
+
+## 已规划行程
+{itinerary}
+
+类别：交通（往返+当地）/ 住宿 / 餐饮 / 门票活动 / 其他（预留10%）
+输出 Markdown 表格 + 与用户预算对比。
+"""
+
+
+def budget_node(state: dict[str, Any]) -> dict[str, Any]:
+    """按类别拆分预算 → safety"""
+    raw = extract_last_user_text(state.get("messages", [])) or state.get("user_request", "")
+    ctx = _parse_user_input(raw)
+    output = _call_or_mock(
+        "",
+        BUDGET_PROMPT.format(user_request=state.get("user_request", ""), itinerary=state.get("itinerary", "")),
+        _mock_budget(ctx),
+        "budget",
+    )
+    return {
+        "budget": output,
+        "next_node": ROUTE_SAFETY,
+        "sub_reports": [{"agent": "budget", "report": output}],
+    }
+
+
+# ==========================================================================
+# Safety —— 安全评估（可选心知天气）
+# ==========================================================================
+
+SAFETY_PROMPT = """\
+你是 DeepTravel 的安全顾问。评估行程风险并给出建议：
+
+## 行程概览
+{itinerary}
+
+{weather_context}
+
+重点：目的地天气形势 / 治安与自然灾害 / 高风险活动 / 紧急联系方式 / 保险建议
+输出简洁清单格式。
+"""
+
+
+def safety_node(state: dict[str, Any]) -> dict[str, Any]:
+    """先查心知天气，再生成安全评估 → review"""
+    raw = extract_last_user_text(state.get("messages", [])) or state.get("user_request", "")
+    ctx = _parse_user_input(raw)
+
+    # 拿到 itinerary 写入的 city
+    city = ""
+    for sub in state.get("sub_reports", []):
+        if sub.get("agent") == "itinerary" and sub.get("city"):
+            city = sub["city"]; break
+    if not city:
+        city = extract_city_name(state.get("user_request", ""))
+    if city:
+        ctx["city"] = city
+
+    # 天气
+    weather_text = ""
+    if city:
+        pinyin = _city_pinyin(city)
+        if pinyin:
+            print(f"  [safety] 心知天气查询 {city}({pinyin})...")
+            weather = get_weather(pinyin)
+            daily = get_weather_daily(pinyin, days=3)
+            weather_text = _weather_to_text(weather, daily)
+            print(f"  [safety] {weather['text']} {weather['temperature']}°C" if weather else "  [safety] 天气查询失败")
+
+    output = _call_or_mock(
+        "",
+        SAFETY_PROMPT.format(itinerary=state.get("itinerary", ""), weather_context=weather_text),
+        _mock_safety(ctx),
+        "safety",
+    )
+    return {
+        "safety_report": output,
+        "next_node": ROUTE_REVIEW,
+        "sub_reports": [{"agent": "safety", "report": output}],
+    }
+
+
+# ==========================================================================
+# Review —— 方案审核
 # ==========================================================================
 
 REVIEW_PROMPT = """\
-你是 DeepTravel 的方案审核专家。请综合评审以下三份子报告，判断是否通过：
+你是 DeepTravel 的方案审核专家。综合评审三份子报告：
 
 ## 归一化需求
 {user_request}
@@ -423,42 +491,24 @@ REVIEW_PROMPT = """\
 ## 安全报告
 {safety_report}
 
-请逐条检查：
-1. 行程是否完整覆盖需求中的日期、偏好、特殊需求？
-2. 预算是否在用户可接受范围内？
-3. 安全风险是否已充分提示？
+检查：
+1. 行程是否覆盖日期、偏好、特殊需求？
+2. 预算是否可接受？
+3. 安全风险是否充分提示？
 
-**输出格式要求：**
-先给出 [APPROVED] 或 [REVISE] 标签；
-然后用简短文字说明理由；
-如果是 [REVISE]，请明确指出需要修改 itinerary 中的哪些部分。
+**输出：**
+先给出 [APPROVED] 或 [REVISE] 标签；然后简短说明理由。
+如果 [REVISE]，明确指出 itinerary 哪些部分需要修改。
 """
 
-MOCK_REVIEW_APPROVED_OUTPUT = """\
-[APPROVED]
-整体方案完整覆盖 7天6晚 东京 + 富士山行程，预算超出在 5% 以内可接受范围，安全评估充分。无需修订。
-"""
-
-MOCK_REVIEW_REVISE_OUTPUT = """\
-[REVISE]
-预算超出约 ¥6,000（+31%），建议调整：将温泉旅馆从富士山移出改为一日往返，可节省住宿 + 交通费用约 ¥4,500。
-"""
-
-MAX_REVISION = 2  # 最多允许 2 次修订，超过则强制通过或终止
+MAX_REVISION = 2
 
 
 def review_node(state: dict[str, Any]) -> dict[str, Any]:
-    """
-    Review：审核三份子报告，写 review_status（approved/revise）并决定 next_node
-
-    路由规则：
-    - review_status=approved → next_node='integrate'
-    - review_status=revise  → next_node='itinerary'（回退重跑）
-    - revision_count 超过 MAX_REVISION → 强制 integrate 防死循环
-    """
+    """审核三份子报告，决定 approve/revise"""
     revision_count = state.get("revision_count", 0)
 
-    # 超限保护：达到上限则强制通过
+    # 超限保护
     if revision_count >= MAX_REVISION:
         return {
             "review_status": "approved",
@@ -468,31 +518,28 @@ def review_node(state: dict[str, Any]) -> dict[str, Any]:
             "sub_reports": [{"agent": "review", "report": "[APPROVED-强制] 超过修订上限"}],
         }
 
+    raw = extract_last_user_text(state.get("messages", [])) or ""
+    ctx = _parse_user_input(raw)
     output = _call_or_mock(
-        system_prompt="",
-        user_text=REVIEW_PROMPT.format(
+        "",
+        REVIEW_PROMPT.format(
             user_request=state.get("user_request", ""),
             itinerary=state.get("itinerary", ""),
             budget=state.get("budget", ""),
             safety_report=state.get("safety_report", ""),
         ),
-        # 第一次 review 用 approved；第二次如果回退过来，让它 revise 触发上限检查
-        mock=(
-            MOCK_REVIEW_REVISE_OUTPUT if revision_count > 0 else MOCK_REVIEW_APPROVED_OUTPUT
-        ),
-        stage="review",
+        _mock_review(ctx),
+        "review",
     )
 
-    # 解析审核结果
-    is_approved = "[APPROVED]" in output.upper()
-    next_node = ROUTE_INTEGRATE if is_approved else ROUTE_ITINERARY
-    new_revision = revision_count if is_approved else revision_count + 1
+    approved = "[APPROVED]" in output.upper()
+    new_count = revision_count if approved else revision_count + 1
 
     return {
-        "review_status": "approved" if is_approved else "revise",
+        "review_status": "approved" if approved else "revise",
         "review_feedback": output,
-        "revision_count": new_revision,
-        "next_node": next_node,
+        "revision_count": new_count,
+        "next_node": ROUTE_INTEGRATE if approved else ROUTE_ITINERARY,
         "sub_reports": [{"agent": "review", "report": output}],
     }
 
@@ -502,8 +549,7 @@ def review_node(state: dict[str, Any]) -> dict[str, Any]:
 # ==========================================================================
 
 INTEGRATE_PROMPT = """\
-你是 DeepTravel 的方案整合专家。请将以下三份子报告整合成一份结构清晰、
-面向用户的完整旅行方案：
+你是 DeepTravel 的方案整合专家。将以下报告整合成面向用户的完整方案：
 
 ## 1. 归一化需求
 {user_request}
@@ -520,27 +566,77 @@ INTEGRATE_PROMPT = """\
 ## 5. 审核意见
 {review_feedback}
 
-要求：
-- 开头有一句话总结（目的地、天数、人数）
-- 各章节用清晰的 Markdown 标题分隔
-- 结尾给出"方案摘要卡片"（关键信息一览表）
+要求：开头一句话总结 + 各章节 Markdown 分隔 + 结尾方案摘要卡片。
 """
 
 
 def integrate_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Integrate：整合最终方案，设置 next_node='end'"""
+    """整合所有子报告，输出最终方案 → END"""
+    raw = extract_last_user_text(state.get("messages", [])) or ""
+    ctx = _parse_user_input(raw)
+    c, d, n = ctx["city"], ctx["days"], ctx["nights"]
+    p, b, pref = ctx["people"], ctx["budget"], ctx["preference"]
+    rev = state.get("revision_count", 0)
+
+    # 动态拼接（各章节已来自真实上游节点）
+    mock_integrated = f"""# 🗺️ DeepTravel 旅行方案
+
+**目的地：** {c}  |  **天数：** {d}天{n}晚  |  **人数：** {p}人
+
+---
+
+## 📋 归一化需求
+
+{state.get('user_request', '')}
+
+---
+
+## 📅 详细行程
+
+{state.get('itinerary', '')}
+
+---
+
+## 💰 预算估算
+
+{state.get('budget', '')}
+
+---
+
+## 🛡️ 安全提示
+
+{state.get('safety_report', '')}
+
+---
+
+## ✅ 审核意见
+
+{state.get('review_feedback', '')}
+
+---
+
+## 📑 方案摘要卡片
+
+| 项目 | 内容 |
+|------|------|
+| 目的地 | {c} |
+| 日期 | 【用户指定】{d}天{n}晚 |
+| 人数 | {p}人 |
+| 偏好 | {pref} |
+| 预算 | ¥{b:,} |
+| 修订次数 | {rev} |"""
+
     output = _call_or_mock(
-        system_prompt="",
-        user_text=INTEGRATE_PROMPT.format(
+        "",
+        INTEGRATE_PROMPT.format(
             user_request=state.get("user_request", ""),
             itinerary=state.get("itinerary", ""),
             budget=state.get("budget", ""),
             safety_report=state.get("safety_report", ""),
             review_feedback=state.get("review_feedback", ""),
         ),
-        # 整合阶段用 mock 拼接已有子报告，避免 LLM 调用
-        mock=_mock_integrated_plan(state),
-        stage="integrate",
+        mock_integrated,
+        "integrate",
     )
 
     return {
@@ -548,72 +644,3 @@ def integrate_node(state: dict[str, Any]) -> dict[str, Any]:
         "next_node": ROUTE_END,
         "sub_reports": [{"agent": "integrate", "report": "方案整合完成"}],
     }
-
-
-def _mock_integrated_plan(state: dict[str, Any]) -> str:
-    """mock 整合：直接拼接已有子报告，保证即使 mock 模式也能输出完整方案"""
-    parts = [
-        "# 🗺️ DeepTravel 旅行方案\n",
-        f"**目的地：** 日本东京  |  **天数：** 7天6晚  |  **人数：** 2人\n",
-        "---\n",
-        "## 📋 归一化需求\n",
-        state.get("user_request", ""),
-        "\n---\n",
-        "## 📅 详细行程\n",
-        state.get("itinerary", ""),
-        "\n---\n",
-        "## 💰 预算估算\n",
-        state.get("budget", ""),
-        "\n---\n",
-        "## 🛡️ 安全提示\n",
-        state.get("safety_report", ""),
-        "\n---\n",
-        "## ✅ 审核意见\n",
-        state.get("review_feedback", ""),
-        "\n---\n",
-        "## 📑 方案摘要卡片\n",
-        "| 项目 | 内容 |\n",
-        "|------|------|\n",
-        "| 目的地 | 日本东京 + 富士山 |\n",
-        "| 出行日期 | 2026-11-01 ~ 2026-11-07 |\n",
-        "| 总预算 | ≈ ¥26,180（略超用户预算）|\n",
-        "| 修订次数 | " + str(state.get("revision_count", 0)) + " |\n",
-    ]
-    return "\n".join(parts)
-
-
-# ==========================================================================
-# 内部辅助
-# ==========================================================================
-
-def _call_or_mock(
-    system_prompt: str,
-    user_text: str,
-    mock: str,
-    stage: str,
-) -> str:
-    """
-    统一的 LLM 调用封装：
-    - mock 模式 → 直接返回预设 mock 输出
-    - 真实 LLM → 调用后返回 content
-    - LLM 异常 → 记录并返回 mock 兜底，保证流程不中断
-    """
-    if is_mock_mode():
-        return mock
-
-    try:
-        llm = get_llm()
-        messages = []
-        if system_prompt:
-            messages.append(SystemMessage(content=system_prompt))
-        messages.append(HumanMessage(content=user_text))
-        resp = llm.invoke(messages)
-        content = getattr(resp, "content", str(resp)) or ""
-        # LLM 返回为空则兜底
-        if not content.strip():
-            print(f"  [{stage}] LLM 返回空，使用 mock 兜底")
-            return mock
-        return content
-    except Exception as exc:
-        print(f"  [{stage}] LLM 调用失败 ({exc})，使用 mock 兜底")
-        return mock
