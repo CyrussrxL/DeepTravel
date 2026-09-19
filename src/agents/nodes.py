@@ -34,6 +34,7 @@ from .common import (
     ROUTE_INTEGRATE,
 )
 from .tools import search_pois, get_weather, get_weather_daily
+from .mcp_tools import query_flights, query_hotels
 
 
 # ==========================================================================
@@ -392,25 +393,123 @@ BUDGET_PROMPT = """\
 ## 已规划行程
 {itinerary}
 
+{price_context}
+
 类别：交通（往返+当地）/ 住宿 / 餐饮 / 门票活动 / 其他（预留10%）
 输出 Markdown 表格 + 与用户预算对比。
 """
 
 
+def _extract_travel_dates(raw: str) -> tuple[str | None, str | None]:
+    """从用户文本里粗粒度提取出发/返程日期"""
+    import re
+    # 匹配 "2025-10-01" 或 "10月1日" / "10/1"
+    date_re = re.compile(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})")
+    m = date_re.search(raw)
+    if m:
+        return m.group(0), None
+    return None, None
+
+
+def _flight_price_to_text(data: dict) -> str:
+    """把 MCP 返回的航班数据压缩成 prompt 能吃的文本"""
+    if not data or not data.get("dep"):
+        return ""
+    lines = ["### 航班参考价"]
+    for f in data["dep"][:3]:
+        p = f["price_range"]
+        lines.append(
+            f"- {f['airline']} {f['flight_no']} {f['dep_time']} "
+            f"{f['dep_city']}→{f['arr_city']} "
+            f"经济舱 ¥{p['economy_low']}~¥{p['economy_high']} "
+            f"(¥{(p['economy_low']+p['economy_high'])//2}均价)"
+        )
+    if data.get("ret"):
+        for f in data["ret"][:2]:
+            p = f["price_range"]
+            lines.append(
+                f"- 返程 {f['airline']} {f['flight_no']} "
+                f"经济舱 ¥{p['economy_low']}~¥{p['economy_high']}"
+            )
+    return "\n".join(lines)
+
+
+def _hotel_price_to_text(data: dict) -> str:
+    """把 MCP 返回的酒店数据压缩成 prompt 能吃的文本"""
+    if not data or not data.get("hotels"):
+        return ""
+    lines = [f"### 酒店参考价（{data['nights']} 晚）"]
+    # 按档次聚合
+    tier_prices: dict[str, list[int]] = {}
+    for h in data["hotels"]:
+        tier_prices.setdefault(h["tier"], []).append(h["price_per_night"])
+    for tier in ("经济", "舒适", "高档", "豪华"):
+        if tier in tier_prices:
+            prices = tier_prices[tier]
+            avg = sum(prices) // len(prices)
+            low, high = min(prices), max(prices)
+            lines.append(f"- {tier}档: ¥{low}~¥{high}/晚 (平均 ¥{avg}, {len(prices)}家)")
+            lines.append(f"  - {tier}{data['nights']}晚合计 ≈ ¥{avg * data['nights']}/间")
+    return "\n".join(lines)
+
+
 def budget_node(state: dict[str, Any]) -> dict[str, Any]:
-    """按类别拆分预算 → safety"""
+    """先查飞猪真实航班/酒店价格，再生成预算 → safety"""
     raw = extract_last_user_text(state.get("messages", [])) or state.get("user_request", "")
     ctx = _parse_user_input(raw)
+
+    # 1. 从 itinerary sub_report 拿 city（和 safety_node 同样的技巧）
+    city = ""
+    for sub in state.get("sub_reports", []):
+        if sub.get("agent") == "itinerary" and sub.get("city"):
+            city = sub["city"]; break
+    if not city:
+        city = extract_city_name(state.get("user_request", ""))
+
+    # 2. MCP 查询（mock 模式或没 city 时跳过）
+    price_context = ""
+    if not is_mock_mode() and city:
+        print(f"  [budget] MCP 查 {city} 航班+酒店...")
+        dep_date, ret_date = _extract_travel_dates(raw)
+        # 没日期也查酒店，航班用 ctx 里的信息兜底
+        if not dep_date and ctx.get("days"):
+            import datetime
+            dep_date = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+            if ctx["days"] >= 2:
+                ret_date = (datetime.date.today() + datetime.timedelta(days=30 + ctx["days"])).isoformat()
+
+        flights = query_flights(city, "上海", dep_date or "2025-10-01", ret_date) if dep_date else None
+        hotels = query_hotels(city, dep_date or "2025-10-01", ret_date or "2025-10-03") if dep_date else None
+
+        price_chunks = []
+        if flights:
+            txt = _flight_price_to_text(flights)
+            if txt:
+                price_chunks.append(txt)
+                print(f"  [budget] 航班 {len(flights['dep'])} 班")
+        if hotels:
+            txt = _hotel_price_to_text(hotels)
+            if txt:
+                price_chunks.append(txt)
+                print(f"  [budget] 酒店 {len(hotels['hotels'])} 家")
+
+        if price_chunks:
+            price_context = "\n## 真实价格参考（飞猪 MCP）\n" + "\n".join(price_chunks)
+
     output = _call_or_mock(
         "",
-        BUDGET_PROMPT.format(user_request=state.get("user_request", ""), itinerary=state.get("itinerary", "")),
+        BUDGET_PROMPT.format(
+            user_request=state.get("user_request", ""),
+            itinerary=state.get("itinerary", ""),
+            price_context=price_context,
+        ),
         _mock_budget(ctx),
         "budget",
     )
     return {
         "budget": output,
         "next_node": ROUTE_SAFETY,
-        "sub_reports": [{"agent": "budget", "report": output}],
+        "sub_reports": [{"agent": "budget", "report": output, "city": city}],
     }
 
 
