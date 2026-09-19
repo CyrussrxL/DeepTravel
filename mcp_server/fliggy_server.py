@@ -15,11 +15,17 @@ MCP SDK: mcp 1.x FastMCP
 from __future__ import annotations
 
 import json
+import os
 import random
+import requests
 from datetime import date, timedelta
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+
+# 聚合数据 API Key（从 .env 读取，硬编码作为 fallback）
+_JUHE_KEY = os.getenv("JUHE_APP_KEY", "2e96e65ebd175cd7bfe30f6333dbc6d9")
+_JUHE_FLIGHT_URL = "https://apis.juhe.cn/flight/query"
 
 # ---------------------------------------------------------------------------
 # MCP Server 实例
@@ -61,8 +67,63 @@ _AIRLINES = ["国航 CA", "东航 MU", "南航 CZ", "海航 HU", "川航 3U", "�
 _TYPES = ["直飞", "经停", "中转"]
 
 
+def _real_flights(dep_code: str, arr_code: str, dep_date: str, count: int = 6) -> list[dict] | None:
+    """调用聚合数据航班查询 API，失败返回 None"""
+    try:
+        resp = requests.get(_JUHE_FLIGHT_URL, params={
+            "key": _JUHE_KEY,
+            "departure": dep_code,
+            "arrival": arr_code,
+            "departureDate": dep_date,
+            "maxSegments": "0",
+        }, timeout=10)
+        data = resp.json()
+        if data.get("error_code") != 0:
+            print(f"  [juhe] API 错误: {data.get('reason')} (code={data.get('error_code')})")
+            return None
+        infos = data.get("result", {}).get("flightInfo", [])
+        if not infos:
+            print(f"  [juhe] 无航班数据: {dep_code}→{arr_code} @ {dep_date}")
+            return None
+
+        flights = []
+        for info in infos[:count]:
+            price = info.get("ticketPrice", 0) or 0
+            # 聚合返回的 ticketPrice 是参考价，我们构造价格区间
+            flights.append({
+                "flight_no": info.get("flightNo", ""),
+                "airline": info.get("airlineName", info.get("airline", "")),
+                "dep_city": _code_to_city(dep_code),
+                "arr_city": _code_to_city(arr_code),
+                "dep_time": info.get("departureTime", ""),
+                "arrival_time": info.get("arrivalTime", ""),
+                "dur_minutes": _duration_to_minutes(info.get("duration", "")),
+                "price_range": {
+                    "economy_low": int(price * 0.85) if price > 0 else 0,
+                    "economy_high": int(price * 1.15) if price > 0 else 0,
+                    "business": int(price * 2.5) if price > 0 else 0,
+                },
+                "type": "直飞" if info.get("transferNum", 1) <= 1 else "中转",
+                "ticketPrice_raw": price,
+            })
+        return flights
+    except Exception as exc:
+        print(f"  [juhe] 请求异常: {exc}")
+        return None
+
+
+def _duration_to_minutes(duration: str) -> int:
+    """聚合 duration 格式 '08h00m' → 分钟数"""
+    try:
+        h = int(duration.split("h")[0]) if "h" in duration else 0
+        m = int(duration.split("h")[1].replace("m", "")) if "h" in duration and "m" in duration else 0
+        return h * 60 + m
+    except Exception:
+        return 0
+
+
 def _mock_flights(dep_code: str, arr_code: str, dep_date: str, count: int = 6) -> list[dict]:
-    """生成模拟航班列表（价格根据航线距离合理分布）"""
+    """生成模拟航班列表（价格根据航线距离合理分布）—— 作为 fallback"""
     base_price = 300 if dep_code == arr_code else random.choice([450, 680, 920, 1280])
     flights = []
     for i in range(count):
@@ -114,17 +175,24 @@ def search_flights(
     dep_code = _city_to_code(dep_city)
     arr_code = _city_to_code(arr_city)
 
-    dep_flights = _mock_flights(dep_code, arr_code, dep_date)
+    # 优先真实 API，失败 fallback mock
+    dep_flights = _real_flights(dep_code, arr_code, dep_date)
+    data_source = "聚合数据（真实航班）"
+    if dep_flights is None:
+        dep_flights = _mock_flights(dep_code, arr_code, dep_date)
+        data_source = "mock 数据（聚合 API 调用失败）"
 
     ret_flights = None
     if ret_date:
-        ret_flights = _mock_flights(arr_code, dep_code, ret_date)
+        ret_flights = _real_flights(arr_code, dep_code, ret_date)
+        if ret_flights is None:
+            ret_flights = _mock_flights(arr_code, dep_code, ret_date)
 
     return {
         "dep": dep_flights,
         "ret": ret_flights,
         "passengers": adult_num,
-        "note": "mock 数据（飞猪 MCP Server，暂未接入 TOP 签名）",
+        "note": f"数据来源: {data_source}",
     }
 
 

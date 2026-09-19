@@ -475,7 +475,15 @@
       <div v-if="hitlWaiting" class="hitl-panel">
         <div class="hitl-header"><span class="icon">⚠️</span>需要人工审核</div>
         <div class="hitl-desc">
-          Review Agent 连续修订已达上限，或审核结果包含不确定判断。<br/>
+          <div v-if="hitlStage" style="margin-bottom:6px;">
+            <b>触发节点：</b>{{ hitlStage }}
+          </div>
+          <div v-if="hitlReason" style="margin-bottom:6px; color:var(--warning);">
+            <b>原因：</b>{{ hitlReason }}
+          </div>
+          <div v-if="!hitlStage && !hitlReason">
+            Review Agent 连续修订已达上限，或审核结果包含不确定判断。
+          </div>
           请决定是 <b>批准方案</b> 还是 <b>继续修订</b>（重置修订计数器让 LLM 再试一次）。
         </div>
         <div class="hitl-actions">
@@ -664,6 +672,8 @@ createApp({
     /* ====== HITL ====== */
     const hitlWaiting = ref(false);
     const hitlActioning = ref(false);
+    const hitlReason = ref("");
+    const hitlStage = ref("");
 
     /* ====== 历史会话 ====== */
     const historyList = ref([]);
@@ -710,6 +720,8 @@ createApp({
       userInput.value = "";
       adjustInput.value = "";
       hitlWaiting.value = false;
+      hitlReason.value = "";
+      hitlStage.value = "";
       completedNodes.value = [];
       Object.keys(agentReports).forEach(k => delete agentReports[k]);
       Object.keys(reportExpanded).forEach(k => delete reportExpanded[k]);
@@ -771,10 +783,23 @@ createApp({
           revisingCount.value = evt.count;
           revisingBannerShown.value = true;
           break;
+        case "hitl_start":
+          hitlWaiting.value = true;
+          hitlStage.value = evt.hitl_stage || "";
+          hitlReason.value = evt.hitl_reason || "需要人工审核";
+          break;
         case "done":
           finalPlan.value = evt.final_plan || "";
           totalMs.value = evt.total_ms || 0;
           revisingCount.value = evt.revision_count || 0;
+          // HITL 场景下也可能 done（hitl_node 结束图）
+          if (evt.hitl_triggered) {
+            hitlWaiting.value = true;
+            hitlStage.value = evt.hitl_stage || "";
+            hitlReason.value = evt.hitl_reason || hitlReason.value;
+          } else {
+            hitlWaiting.value = false;
+          }
           if (evt.from_hitl) adjusted.value = true;
           break;
         case "error":
@@ -937,7 +962,7 @@ createApp({
       currentThreadId, activeNode, completedNodes, revisingCount, revisingBannerShown,
       agentReports, reportExpanded,
       finalPlan, totalMs, allAgents,
-      hitlWaiting, hitlActioning,
+      hitlWaiting, hitlActioning, hitlReason, hitlStage,
       historyList, historyLoading, selectedHistory,
       currentAgentLabel, totalMsText, renderedFinalPlan, renderedHistoryPlan,
       agentItemClass, agentBadge, quickInput, resetView,

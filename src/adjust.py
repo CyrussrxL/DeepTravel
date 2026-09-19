@@ -134,8 +134,9 @@ def build_adjust_graph(start_node: str):
     构建裁剪后的调整子图。
 
     只保留 start_node 及之后的节点。
-    路由：start → ... → review → integrate → END
-          （review 仍可 revise 回退，但只允许回退到 start_node）
+    路由：start → ... → review → HITL gate ─┬─ hitl（等待人工）
+                                            ├─ 自动 revise（回退）
+                                            └─ integrate（自动 approve）
     """
     from .graph import build_graph as _build_full_graph
     from .agents.nodes import (
@@ -143,6 +144,7 @@ def build_adjust_graph(start_node: str):
         safety_node, review_node, integrate_node,
     )
     from .agents.common import route_decision
+    from .hitl import hitl_node, hitl_gate_route
 
     start_idx = NODE_INDEX.get(start_node, 5)
     active_nodes = AGENT_ORDER[start_idx:]
@@ -158,40 +160,68 @@ def build_adjust_graph(start_node: str):
     # 添加起点节点
     sg.set_entry_point(start_node)
 
-    # 添加所有激活的节点
+    # 添加所有激活的节点 + hitl
+    node_fns = {
+        "coordinator": coordinator_node,
+        "itinerary": itinerary_node,
+        "budget": budget_node,
+        "safety": safety_node,
+        "review": review_node,
+        "integrate": integrate_node,
+        "hitl": hitl_node,
+    }
     for node in active_nodes:
-        node_fn = {
-            "coordinator": coordinator_node,
-            "itinerary": itinerary_node,
-            "budget": budget_node,
-            "safety": safety_node,
-            "review": review_node,
-            "integrate": integrate_node,
-        }[node]
-        sg.add_node(node, node_fn)
+        sg.add_node(node, node_fns[node])
+    if "hitl" not in active_nodes:
+        sg.add_node("hitl", hitl_node)
 
-    # 定义局部路由函数
+    # review 用 hitl_gate_route（和 full_graph 一样）
+    # 但 hitl_gate_route 返回的 "itinerary" 可能需要映射
+    def local_hitl_gate(state: dict) -> str:
+        result = hitl_gate_route(state)
+        if result == "itinerary" and "itinerary" not in active_nodes:
+            return revise_target
+        return result
+
+    # 其他节点用 local_route
     def local_route(state: dict) -> str:
         next_node = state.get("next_node", "end")
-        # 如果 revise 目标不在 active_nodes 里，跳 revise_target
         if next_node == "itinerary" and "itinerary" not in active_nodes:
             return revise_target
-        # 如果目标是 integrate 且不在 active_nodes（不应该发生，integrate 总是最后）
         if next_node == "end" or next_node not in active_nodes:
             return END
         return next_node
 
     path_map = {n: n for n in active_nodes}
+    path_map["hitl"] = "hitl"
     path_map[END] = END
 
     for node in active_nodes:
-        sg.add_conditional_edges(
-            source=node,
-            path=local_route,
-            path_map=path_map,
-        )
+        if node == "review":
+            sg.add_conditional_edges(
+                source="review",
+                path=local_hitl_gate,
+                path_map={
+                    "hitl": "hitl",
+                    "itinerary": path_map.get("itinerary", revise_target),
+                    "integrate": "integrate",
+                },
+            )
+        elif node == "hitl":
+            # hitl 节点自己的路由
+            sg.add_conditional_edges(
+                source="hitl",
+                path=local_route,
+                path_map=path_map,
+            )
+        else:
+            sg.add_conditional_edges(
+                source=node,
+                path=local_route,
+                path_map=path_map,
+            )
 
-    # 复用主 graph 的 checkpointer 逻辑（直接 import build_graph 以触发全局 checkpointer 初始化）
+    # 复用主 graph 的 checkpointer 逻辑
     _build_full_graph()
     from .graph import _get_checkpointer
     return sg.compile(checkpointer=_get_checkpointer())

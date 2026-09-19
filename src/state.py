@@ -87,6 +87,9 @@ class TravelState(TypedDict, total=False):
 
     # HITL 状态标记（waiting / resolved_approve / resolved_revise / 空）
     hitl_status: Annotated[str, _override_reducer]
+    hitl_stage: Annotated[str, _override_reducer]       # 哪个节点触发的 HITL
+    hitl_reason: Annotated[str, _override_reducer]      # 为什么进 HITL
+    hitl_next_node: Annotated[str, _override_reducer]   # 超时场景 approve 后往哪走
 
     # 所有 Agent 子报告的汇总（便于持久化 & 历史检索）
     sub_reports: Annotated[list[dict], _append_reducer]

@@ -97,6 +97,12 @@ AGENT_META = {
         "color": "#8b5cf6",
         "desc": "整合最终方案",
     },
+    "hitl": {
+        "label": "人工审核",
+        "icon": "👤",
+        "color": "#d946ef",
+        "desc": "等待人工审核决策",
+    },
 }
 
 
@@ -106,6 +112,7 @@ class PlanRequest(BaseModel):
     user_input: str
     mock: bool = False
     thread_id: str | None = None  # 可选：恢复已有会话继续
+    initial_revision_count: int = 0  # 可选：测试用，让 review 更快触发 HITL
 
 
 class AdjustRequest(BaseModel):
@@ -118,7 +125,7 @@ class AdjustRequest(BaseModel):
 
 def _event_from_node(node_name: str, state_update: dict, duration_ms: int) -> dict:
     """把一个节点的输出包装成前端友好的事件"""
-    meta = AGENT_META.get(node_name, {"label": node_name, "icon": "🤖", "color": "#888"})
+    meta = AGENT_META.get(node_name, {"label": node_name, "icon": "🤖", "color": "#888", "desc": "未知节点"})
 
     # 提取该节点产出的主要内容（子报告）
     report_content = ""
@@ -134,6 +141,12 @@ def _event_from_node(node_name: str, state_update: dict, duration_ms: int) -> di
     review_status = state_update.get("review_status", "")
     revision_count = state_update.get("revision_count", 0)
 
+    # HITL 信息（超时/审核触发时携带）
+    hitl_status = state_update.get("hitl_status", "")
+    hitl_stage = state_update.get("hitl_stage", "")
+    hitl_reason = state_update.get("hitl_reason", "")
+    hitl_next_node = state_update.get("hitl_next_node", "")
+
     return {
         "type": "node",
         "node": node_name,
@@ -146,6 +159,10 @@ def _event_from_node(node_name: str, state_update: dict, duration_ms: int) -> di
         "next_node": next_node,
         "review_status": review_status,
         "revision_count": revision_count,
+        "hitl_status": hitl_status,
+        "hitl_stage": hitl_stage,
+        "hitl_reason": hitl_reason,
+        "hitl_next_node": hitl_next_node,
     }
 
 
@@ -156,19 +173,23 @@ def plan(req: PlanRequest) -> StreamingResponse:
     """
     提交旅行规划请求，通过 SSE 逐节点推送进度事件（同步 StreamingResponse）。
     """
-    # 强制 mock 开关
+    print(f"[plan] 进入 plan() mock={req.mock} user_input={req.user_input[:20]}", flush=True)
+    # mock 开关：req.mock 优先；否则看环境变量；都没有就不 mock
     if req.mock:
         os.environ["MOCK_LLM"] = "true"
-    else:
+    elif os.getenv("MOCK_LLM", "").lower() not in ("true", "1", "yes"):
         os.environ.pop("MOCK_LLM", None)
 
+    print(f"[plan] 调 build_graph()...", flush=True)
     graph = build_graph()
+    print(f"[plan] build_graph 完成", flush=True)
     thread_id = req.thread_id or f"deeptravel-{uuid.uuid4().hex[:12]}"
     config = {"configurable": {"thread_id": thread_id}}
     initial_state = {
         "messages": [HumanMessage(content=req.user_input)],
-        "revision_count": 0,
+        "revision_count": req.initial_revision_count,
     }
+    print(f"[plan] 返回 StreamingResponse, thread_id={thread_id}", flush=True)
 
     def generate():
         all_sub_reports: list[dict] = []
@@ -187,11 +208,17 @@ def plan(req: PlanRequest) -> StreamingResponse:
             ],
             "mock": req.mock or os.getenv("MOCK_LLM", "false").lower() in ("true", "1", "yes"),
         }
-        yield f"data: {json.dumps(start_evt, ensure_ascii=False)}\n\n"
+        chunk = f"data: {json.dumps(start_evt, ensure_ascii=False)}\n\n"
+        print(f"  [server.generate] yield start ({len(chunk)} bytes)")
+        yield chunk
 
-        # 2. 直接 stream（同步 generator，FastAPI 会在自己的线程里跑）
+        # 2. stream
+        hitl_triggered = False
+        hitl_info: dict = {}
         try:
+            print(f"  [server.generate] graph.stream start...")
             for event in graph.stream(initial_state, config):
+                print(f"  [server.generate] 收到事件 {list(event.keys())}")
                 for node_name, state_update in event.items():
                     if "sub_reports" in state_update:
                         all_sub_reports.extend(state_update["sub_reports"])
@@ -204,7 +231,22 @@ def plan(req: PlanRequest) -> StreamingResponse:
                     if "final_plan" in state_update:
                         final_plan = state_update["final_plan"]
 
+                    # 先 yield node 事件（已携带 hitl 字段）
                     yield f"data: {json.dumps(_event_from_node(node_name, state_update, 0), ensure_ascii=False)}\n\n"
+
+                    # 检测 HITL 触发
+                    if (node_name == "hitl"
+                        or state_update.get("hitl_status") == "waiting"
+                        or state_update.get("next_node") == "hitl"):
+                        hitl_triggered = True
+                        hitl_info = {
+                            "hitl_stage": state_update.get("hitl_stage", "") or "review",
+                            "hitl_reason": state_update.get("hitl_reason", "") or "需要人工审核",
+                            "hitl_next_node": state_update.get("hitl_next_node", ""),
+                            "revision_count": cur_rev,
+                        }
+                        # 专门的 hitl_start 事件
+                        yield f"data: {json.dumps({'type':'hitl_start', **hitl_info}, ensure_ascii=False)}\n\n"
 
                     if state_update.get("next_node") == "end":
                         break
@@ -213,7 +255,7 @@ def plan(req: PlanRequest) -> StreamingResponse:
             yield f"data: {json.dumps(err_evt, ensure_ascii=False)}\n\n"
             return
 
-        # 3. done
+        # 3. done（HITL 场景下 final_plan 为空、hitl_waiting=True）
         done_evt = {
             "type": "done",
             "thread_id": thread_id,
@@ -221,8 +263,12 @@ def plan(req: PlanRequest) -> StreamingResponse:
             "sub_reports": all_sub_reports,
             "total_ms": int((time.time() - total_start) * 1000),
             "revision_count": last_revision_count,
+            "hitl_triggered": hitl_triggered,
+            "hitl_stage": hitl_info.get("hitl_stage", ""),
+            "hitl_reason": hitl_info.get("hitl_reason", ""),
         }
         yield f"data: {json.dumps(done_evt, ensure_ascii=False)}\n\n"
+        print(f"  [server.generate] done hitl={hitl_triggered}")
 
     return StreamingResponse(
         generate(),
@@ -288,7 +334,7 @@ def adjust(req: AdjustRequest) -> StreamingResponse:
     """交互式调整已有方案（同步 StreamingResponse）。"""
     if req.mock:
         os.environ["MOCK_LLM"] = "true"
-    else:
+    elif os.getenv("MOCK_LLM", "").lower() not in ("true", "1", "yes"):
         os.environ.pop("MOCK_LLM", None)
 
     from .adjust import run_adjust, determine_adjust_start, build_adjust_graph
@@ -311,7 +357,9 @@ def adjust(req: AdjustRequest) -> StreamingResponse:
     ]
     if start_node == "coordinator":
         adjust_state["user_request"] = req.modify_request
-    adjust_state["revision_count"] = 0
+    # 保留已有 revision_count——多次 adjust 可以累积触发 HITL
+    # 但第一次 adjust 如果 revision_count 是 0，那 review mock 会 APPROVED（正常）
+    # 连续多次 adjust 后 revision_count 累积 → 超限 → HITL
     adjust_state["review_status"] = "pending"
 
     def generate():
@@ -391,7 +439,7 @@ def hitl_decision(thread_id: str, req: HitlDecisionRequest) -> StreamingResponse
     if state_obj is None:
         raise HTTPException(status_code=404, detail=f"会话 {thread_id} 不存在")
 
-    # 注入人工决策
+    # 注入人工决策（修改 checkpoint 里的 state）
     if req.decision == "approve":
         human_update = hitl_approve_state(dict(state_obj.values))
     elif req.decision == "revise":
@@ -404,6 +452,9 @@ def hitl_decision(thread_id: str, req: HitlDecisionRequest) -> StreamingResponse
             err_evt = {"type": "error", "message": f"无效决策: {req.decision}"}
             yield f"data: {json.dumps(err_evt, ensure_ascii=False)}\n\n"
         return StreamingResponse(gen_err(), media_type="text/event-stream")
+
+    # 修改 checkpoint 中的 state（让 hitl_node 下次执行时能看到 resolved 状态）
+    graph.update_state(config, human_update)
 
     def generate():
         total_start = time.time()
@@ -419,7 +470,7 @@ def hitl_decision(thread_id: str, req: HitlDecisionRequest) -> StreamingResponse
         all_sub_reports: list[dict] = []
         final_plan = ""
         try:
-            for event in graph.stream(None, config, input=human_update):
+            for event in graph.stream(None, config):
                 for node_name, state_update in event.items():
                     if "sub_reports" in state_update:
                         all_sub_reports.extend(state_update["sub_reports"])

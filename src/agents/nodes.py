@@ -18,6 +18,7 @@ Mock 一致性设计：
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -26,6 +27,7 @@ from .common import (
     get_llm,
     is_mock_mode,
     extract_last_user_text,
+    LLM_TIMEOUT_SEC,
     ROUTE_END,
     ROUTE_ITINERARY,
     ROUTE_BUDGET,
@@ -35,6 +37,12 @@ from .common import (
 )
 from .tools import search_pois, get_weather, get_weather_daily
 from .mcp_tools import query_flights, query_hotels
+
+
+# --------- 自定义异常 ---------
+class LLMTimeoutError(Exception):
+    """LLM 调用超时，触发 HITL"""
+    pass
 
 
 # ==========================================================================
@@ -244,9 +252,21 @@ def _mock_safety(ctx: dict) -> str:
             f"- 常规常备药（感冒药、肠胃药、创可贴）即可")
 
 
-def _mock_review(ctx: dict) -> str:
+def _mock_review(ctx: dict, revision_count: int = 0) -> str:
+    """
+    mock review 根据 revision_count 返回不同结果（方便测试 HITL）：
+    revision_count==0 → APPROVED
+    revision_count>=1 → REVISE（触发 revise 回退，两次后超限进 HITL）
+    """
     c = ctx["city"]
-    return f"[APPROVED]\n{c}行程完整覆盖需求，预算合理，安全评估充分。无需修订。"
+    if revision_count == 0:
+        return f"[APPROVED]\n{c}行程完整覆盖需求，预算合理，安全评估充分。无需修订。"
+    else:
+        return (f"[REVISE]\n"
+                f"{c}行程需要进一步优化：\n"
+                f"1. 部分景点安排过于密集，建议增加弹性时间\n"
+                f"2. 预算中交通费用估算偏紧，建议补充\n"
+                f"请 itinerary 节点重新规划。")
 
 
 # ==========================================================================
@@ -280,22 +300,48 @@ def _weather_to_text(weather: dict | None, daily: list[dict] | None = None) -> s
 # ==========================================================================
 
 def _call_or_mock(system_prompt: str, user_text: str, mock: str, stage: str) -> str:
-    """mock 模式直接返回 mock；真实模式调 LLM，失败回退 mock。"""
+    """
+    mock 模式直接返回 mock；真实模式调 LLM。
+
+    超时行为：抛 LLMTimeoutError（让调用方捕获并触发 HITL）
+    其他错误：回退 mock 输出
+    """
     if is_mock_mode():
         return mock
-    try:
+
+    # 用线程池 + timeout 实现精确超时
+    def _llm_task() -> str:
         llm = get_llm()
         messages = []
         if system_prompt:
             messages.append(SystemMessage(content=system_prompt))
         messages.append(HumanMessage(content=user_text))
         resp = llm.invoke(messages)
-        content = getattr(resp, "content", str(resp))
+        return getattr(resp, "content", str(resp))
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_llm_task)
+            content = future.result(timeout=LLM_TIMEOUT_SEC)
         print(f"  [{stage}] LLM 返回 {len(content)} 字符")
         return content
+    except FutureTimeout:
+        print(f"  [{stage}] ⏰ LLM 调用超时（{LLM_TIMEOUT_SEC}s），触发 HITL")
+        raise LLMTimeoutError(f"{stage} 节点 LLM 调用超时 ({LLM_TIMEOUT_SEC}s)")
     except Exception as exc:
         print(f"  [{stage}] ⚠️ LLM 调用失败（{type(exc).__name__}），回退 mock 输出: {exc}")
         return mock
+
+
+def _hitl_on_timeout(stage: str, next_node: str = "itinerary", reason: str | None = None) -> dict:
+    """构造 HITL 状态返回值（节点超时/失败时调用）"""
+    return {
+        "next_node": "hitl",
+        "hitl_status": "waiting",
+        "hitl_stage": stage,
+        "hitl_reason": reason or f"{stage} 节点 LLM 调用超时 ({LLM_TIMEOUT_SEC}s)",
+        "hitl_next_node": next_node,  # approve 后往哪走
+    }
 
 
 # ==========================================================================
@@ -319,7 +365,10 @@ def coordinator_node(state: dict[str, Any]) -> dict[str, Any]:
     """归一化用户需求 → itinerary"""
     raw = extract_last_user_text(state.get("messages", [])) or "请为我规划一次旅行"
     ctx = _parse_user_input(raw)
-    output = _call_or_mock(COORDINATOR_PROMPT, raw, _mock_coordinator(ctx), "coordinator")
+    try:
+        output = _call_or_mock(COORDINATOR_PROMPT, raw, _mock_coordinator(ctx), "coordinator")
+    except LLMTimeoutError:
+        return _hitl_on_timeout("coordinator", ROUTE_ITINERARY)
     return {
         "user_request": output,
         "next_node": ROUTE_ITINERARY,
@@ -367,12 +416,16 @@ def itinerary_node(state: dict[str, Any]) -> dict[str, Any]:
                 seen.add(p["name"]); uniq.append(p)
         pois_text = _pois_to_text(uniq[:12])
 
-    output = _call_or_mock(
-        "",
-        ITINERARY_PROMPT.format(user_request=state.get("user_request", ""), poi_context=pois_text),
-        _mock_itinerary(ctx),
-        "itinerary",
-    )
+    try:
+        output = _call_or_mock(
+            "",
+            ITINERARY_PROMPT.format(user_request=state.get("user_request", ""), poi_context=pois_text),
+            _mock_itinerary(ctx),
+            "itinerary",
+        )
+    except LLMTimeoutError:
+        return _hitl_on_timeout("itinerary", ROUTE_BUDGET)
+
     return {
         "itinerary": output,
         "next_node": ROUTE_BUDGET,
@@ -496,16 +549,19 @@ def budget_node(state: dict[str, Any]) -> dict[str, Any]:
         if price_chunks:
             price_context = "\n## 真实价格参考（飞猪 MCP）\n" + "\n".join(price_chunks)
 
-    output = _call_or_mock(
-        "",
-        BUDGET_PROMPT.format(
-            user_request=state.get("user_request", ""),
-            itinerary=state.get("itinerary", ""),
-            price_context=price_context,
-        ),
-        _mock_budget(ctx),
-        "budget",
-    )
+    try:
+        output = _call_or_mock(
+            "",
+            BUDGET_PROMPT.format(
+                user_request=state.get("user_request", ""),
+                itinerary=state.get("itinerary", ""),
+                price_context=price_context,
+            ),
+            _mock_budget(ctx),
+            "budget",
+        )
+    except LLMTimeoutError:
+        return _hitl_on_timeout("budget", ROUTE_SAFETY)
     return {
         "budget": output,
         "next_node": ROUTE_SAFETY,
@@ -556,12 +612,15 @@ def safety_node(state: dict[str, Any]) -> dict[str, Any]:
             weather_text = _weather_to_text(weather, daily)
             print(f"  [safety] {weather['text']} {weather['temperature']}°C" if weather else "  [safety] 天气查询失败")
 
-    output = _call_or_mock(
-        "",
-        SAFETY_PROMPT.format(itinerary=state.get("itinerary", ""), weather_context=weather_text),
-        _mock_safety(ctx),
-        "safety",
-    )
+    try:
+        output = _call_or_mock(
+            "",
+            SAFETY_PROMPT.format(itinerary=state.get("itinerary", ""), weather_context=weather_text),
+            _mock_safety(ctx),
+            "safety",
+        )
+    except LLMTimeoutError:
+        return _hitl_on_timeout("safety", ROUTE_REVIEW)
     return {
         "safety_report": output,
         "next_node": ROUTE_REVIEW,
@@ -605,29 +664,22 @@ def review_node(state: dict[str, Any]) -> dict[str, Any]:
     """审核三份子报告，决定 approve/revise"""
     revision_count = state.get("revision_count", 0)
 
-    # 超限保护
-    if revision_count >= MAX_REVISION:
-        return {
-            "review_status": "approved",
-            "review_feedback": f"已达到最大修订次数 ({MAX_REVISION})，强制通过审核",
-            "revision_count": revision_count,
-            "next_node": ROUTE_INTEGRATE,
-            "sub_reports": [{"agent": "review", "report": "[APPROVED-强制] 超过修订上限"}],
-        }
-
     raw = extract_last_user_text(state.get("messages", [])) or ""
     ctx = _parse_user_input(raw)
-    output = _call_or_mock(
-        "",
-        REVIEW_PROMPT.format(
-            user_request=state.get("user_request", ""),
-            itinerary=state.get("itinerary", ""),
-            budget=state.get("budget", ""),
-            safety_report=state.get("safety_report", ""),
-        ),
-        _mock_review(ctx),
-        "review",
-    )
+    try:
+        output = _call_or_mock(
+            "",
+            REVIEW_PROMPT.format(
+                user_request=state.get("user_request", ""),
+                itinerary=state.get("itinerary", ""),
+                budget=state.get("budget", ""),
+                safety_report=state.get("safety_report", ""),
+            ),
+            _mock_review(ctx, revision_count),
+            "review",
+        )
+    except LLMTimeoutError:
+        return _hitl_on_timeout("review", ROUTE_INTEGRATE)
 
     approved = "[APPROVED]" in output.upper()
     new_count = revision_count if approved else revision_count + 1
@@ -723,18 +775,21 @@ def integrate_node(state: dict[str, Any]) -> dict[str, Any]:
 | 预算 | ¥{b:,} |
 | 修订次数 | {rev} |"""
 
-    output = _call_or_mock(
-        "",
-        INTEGRATE_PROMPT.format(
-            user_request=state.get("user_request", ""),
-            itinerary=state.get("itinerary", ""),
-            budget=state.get("budget", ""),
-            safety_report=state.get("safety_report", ""),
-            review_feedback=state.get("review_feedback", ""),
-        ),
-        mock_integrated,
-        "integrate",
-    )
+    try:
+        output = _call_or_mock(
+            "",
+            INTEGRATE_PROMPT.format(
+                user_request=state.get("user_request", ""),
+                itinerary=state.get("itinerary", ""),
+                budget=state.get("budget", ""),
+                safety_report=state.get("safety_report", ""),
+                review_feedback=state.get("review_feedback", ""),
+            ),
+            mock_integrated,
+            "integrate",
+        )
+    except LLMTimeoutError:
+        return _hitl_on_timeout("integrate", ROUTE_END)
 
     return {
         "final_plan": output,

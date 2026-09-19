@@ -17,6 +17,9 @@ from langchain_core.messages import HumanMessage, AnyMessage
 
 load_dotenv()
 
+# --------- 超时常量 ---------
+LLM_TIMEOUT_SEC = 90  # LLM 调用超时（秒），超时后触发 HITL
+
 # --------- LLM 初始化 ---------
 
 _mock_flag = os.getenv("MOCK_LLM", "false").lower() in ("true", "1", "yes")

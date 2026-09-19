@@ -120,6 +120,7 @@ def build_graph(checkpointer_path: str | None = None):
         ROUTE_REVIEW: "review",
         ROUTE_INTEGRATE: "integrate",
         ROUTE_END: END,
+        "hitl": "hitl",  # 任意节点超时/异常都能触发 HITL
     }
 
     # 除了 review，其他节点用 route_decision

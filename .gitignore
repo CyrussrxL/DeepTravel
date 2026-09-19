@@ -43,3 +43,5 @@ Thumbs.db
 # ===== LangGraph 持久化数据（如有） =====
 *.sqlite
 *.db
+*.sqlite-shm
+*.sqlite-wal
