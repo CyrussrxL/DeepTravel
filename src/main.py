@@ -46,8 +46,10 @@ def run(user_input: str, mock: bool = False) -> str:
     print(f"模式：     {'MOCK（无API调用）' if mock else '真实LLM'}")
     print("\n" + "-" * 40)
 
-    # 执行图，逐节点打印输出
-    result = app.invoke(initial_state)
+    # 执行图，逐节点打印输出（Checkpointer 要求 thread_id）
+    import uuid
+    config = {"configurable": {"thread_id": f"cli-{uuid.uuid4().hex[:12]}"}}
+    result = app.invoke(initial_state, config)
 
     print("-" * 40)
     print(f"\n总修订次数：{result.get('revision_count', 0)}")

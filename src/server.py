@@ -317,7 +317,7 @@ def health():
     return {
         "status": "ok",
         "mock_mode": mock,
-        "model": os.getenv("DASHSCOPE_MODEL", "qwen3.8-27b"),
+        "model": os.getenv("DASHSCOPE_MODEL", "(not set)"),
     }
 
 

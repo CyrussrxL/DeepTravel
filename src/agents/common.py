@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage, AnyMessage
 load_dotenv()
 
 # --------- 超时常量 ---------
-LLM_TIMEOUT_SEC = 300  # LLM 调用超时（秒），qwen3.8-27b 大模型长输出需要更久
+LLM_TIMEOUT_SEC = 300  # LLM 调用超时（秒），大模型长输出需要更久
 
 # --------- LLM 初始化 ---------
 
@@ -46,7 +46,7 @@ def get_llm():
     优先级：
     1. MOCK_LLM=true → 抛异常，调用方回退 mock
     2. DASHSCOPE_API_KEY 存在 → ChatOpenAI + DashScope 兼容端点
-       （qwen3.8 新系列模型必须走 compatible-mode，旧 ChatTongyi 端点不认）
+       （新版模型必须走 compatible-mode，旧 ChatTongyi 端点不认）
     3. OPENAI_API_KEY 兜底
 
     所有路径均禁用系统代理（通过自定义 http_client），
@@ -62,18 +62,25 @@ def get_llm():
     # 主路径：DashScope 兼容端点
     dashscope_key = os.getenv("DASHSCOPE_API_KEY")
     if dashscope_key:
-        # qwen3 系列默认开启思考模式，reasoning 内容会占用 output token 预算。
+        # 部分模型默认开启思考模式，reasoning 内容会占用 output token 预算。
         # max_tokens 被思考吃光时 content 会返回空字符串（实测 2000 不够用），
         # 因此默认关闭思考。中文长报告 ≈1.5 字/token，6000 实测会在 Day 2/3
         # 截断（4325 字报告即触顶），提高到 8000。
+        # 模型名不设默认值：由用户在 .env 的 DASHSCOPE_MODEL 中指定。
         enable_thinking = os.getenv("DASHSCOPE_ENABLE_THINKING", "false").lower() in ("true", "1", "yes")
+        model = os.getenv("DASHSCOPE_MODEL", "")
+        if not model:
+            raise RuntimeError(
+                "未配置 DASHSCOPE_MODEL：请在 .env 中填入你开通的模型名"
+                "（参考 .env.example，复制 .env.example 为 .env 后填写）"
+            )
         return ChatOpenAI(
             api_key=dashscope_key,
             base_url=os.getenv(
                 "DASHSCOPE_BASE_URL",
                 "https://dashscope.aliyuncs.com/compatible-mode/v1",
             ),
-            model=os.getenv("DASHSCOPE_MODEL", "qwen3.8-27b"),
+            model=model,
             temperature=0.2,
             max_tokens=int(os.getenv("DASHSCOPE_MAX_TOKENS", "8000")),
             http_client=client,
@@ -83,10 +90,13 @@ def get_llm():
     # 兜底：原生 OpenAI
     openai_key = os.getenv("OPENAI_API_KEY")
     if openai_key:
+        openai_model = os.getenv("OPENAI_MODEL", "")
+        if not openai_model:
+            raise RuntimeError("已配置 OPENAI_API_KEY 但未配置 OPENAI_MODEL，请在 .env 中填入模型名")
         return ChatOpenAI(
             api_key=openai_key,
             base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            model=openai_model,
             temperature=0.2,
             max_tokens=2000,
             http_client=client,

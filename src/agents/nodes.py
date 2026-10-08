@@ -489,7 +489,7 @@ _CN_MONTH = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
 def _enforce_mentioned_month(raw: str, start: str) -> tuple[str, bool]:
     """确定性月份校验：用户提到「N月」但 LLM 给的起点月份不符 → 钉到该月 1 日。
 
-    实测 qwen3.7-flash 对「十月份去大理」仍会给出 9/30（LLM 屡教不改的典型），
+    实测 LLM 对「十月份去大理」仍可能给出 9/30（LLM 屡教不改的典型），
     语义校验交给代码。返回 (start, adjusted)。
     """
     from datetime import date

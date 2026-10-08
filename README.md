@@ -116,15 +116,15 @@ MOCK_LLM=true python -m src.main
 | 变量 | 必填 | 提供者 | 用途 |
 |------|------|--------|------|
 | `DASHSCOPE_API_KEY` | ✅ | 阿里云百炼 | 主 LLM |
-| `DASHSCOPE_MODEL` | - | 阿里云百炼 | 默认 `qwen3.8-27b`，支持 qwen3.8-max / qwen-plus / qwen3.7-flash |
+| `DASHSCOPE_MODEL` | ✅ | 阿里云百炼 | 填入你开通的模型名（必填，无默认值） |
 | `DASHSCOPE_BASE_URL` | - | - | 默认 DashScope OpenAI 兼容端点 |
-| `DASHSCOPE_ENABLE_THINKING` | - | - | 默认 `false`（qwen3 思考模式占用 output token） |
+| `DASHSCOPE_ENABLE_THINKING` | - | - | 默认 `false`（思考模式会占用 output token 预算） |
 | `DASHSCOPE_MAX_TOKENS` | - | - | 默认 `8000`（中文长报告需要） |
 | `AMAP_API_KEY` | - | 高德开放平台 | Itinerary Agent：POI 搜索 |
 | `SENIVERSE_API_KEY` | - | 心知天气 | Safety Agent：天气查询 |
 | `MOCK_LLM` | - | - | `true` 跳过所有外部调用 |
 
-> **注意**：qwen3.8 系列必须走 DashScope OpenAI 兼容端点（`compatible-mode/v1`），旧端点对新模型返回 `url error`；思考模式强制开启的模型（如 qwen3.8-2.4t 系列）与本项目 `enable_thinking=false` 配置不兼容。
+> **注意**：新版模型必须走 DashScope OpenAI 兼容端点（`compatible-mode/v1`），旧端点对新模型返回 `url error`；思考模式强制开启的模型与本项目 `enable_thinking=false` 配置不兼容，选型时请先确认该约束。
 
 ---
 
