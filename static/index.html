@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>DeepTravel · 多Agent旅行规划管家</title>
 
-<script src="https://unpkg.com/vue@3.4/dist/vue.global.prod.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css" />
-<script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/highlight.min.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/vue/3.4.38/vue.global.prod.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
+<script src="https://cdn.bootcdn.net/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 
 <style>
   :root {
@@ -258,6 +258,11 @@
   .history-hitl-tag {
     background: rgba(245,158,11,0.12); color: var(--warning);
   }
+  .btn-delete-item {
+    background: none; border: none; cursor: pointer;
+    font-size: 14px; padding: 2px 4px; opacity: 0.4;
+  }
+  .btn-delete-item:hover { opacity: 1; }
 
   /* Agent 进度 */
   .agents-panel {
@@ -395,12 +400,138 @@
   .status-bar .pill.done { color: var(--success); }
   .status-bar .pill.error { color: var(--danger); }
   .status-bar .pill.loading { color: var(--primary); }
+
+  /* 三方选择面板 */
+  .decision-panel {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    background: var(--bg-soft);
+  }
+  .decision-title {
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 600;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .decision-title .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--success, #10b981);
+  }
+  .decision-btns {
+    display: flex;
+    gap: 8px;
+  }
+  .decision-btns button {
+    flex: 1;
+    padding: 10px 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.15s;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  .decision-btns button:hover {
+    border-color: var(--primary);
+    background: rgba(99, 102, 241, 0.08);
+  }
+  .decision-btns button .big-icon { font-size: 18px; }
+  .decision-btns button .label { font-weight: 500; }
+  .decision-btns button .hint { font-size: 11px; color: var(--text-muted); }
+  .decision-btns button.approve { border-color: #10b981; }
+  .decision-btns button.approve:hover { background: rgba(16,185,129,0.1); }
+  .decision-btns button.selected {
+    border-color: var(--primary);
+    background: rgba(99,102,241,0.1);
+  }
+  .decision-sub {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--border);
+  }
+  .decision-sub h4 {
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+  .revise-options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .revise-options label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+  }
+  .revise-options label:hover { border-color: var(--primary); }
+  .revise-options input { accent-color: var(--primary); }
+
+  /* 必填表单 */
+  .form-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .form-field {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .form-field label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .form-field .required {
+    color: var(--danger, #ef4444);
+    margin-left: 2px;
+  }
+
   .spinner {
     width: 12px; height: 12px; border: 2px solid var(--primary);
     border-top-color: transparent; border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ===== review 四维评分条 ===== */
+  .score-bars {
+    display: flex; flex-direction: column; gap: 4px;
+    margin: 6px 0 2px; padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.45);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    border-radius: 8px;
+  }
+  .score-row { display: flex; align-items: center; gap: 8px; }
+  .score-label { flex: 0 0 56px; font-size: 12px; color: #555; }
+  .score-track {
+    flex: 1; height: 8px; border-radius: 4px;
+    background: rgba(0, 0, 0, 0.08); overflow: hidden;
+  }
+  .score-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
+  .score-fill.good { background: #10b981; }
+  .score-fill.mid  { background: #f59e0b; }
+  .score-fill.low  { background: #ef4444; }
+  .score-val { flex: 0 0 18px; text-align: right; font-size: 12px; font-weight: 600; color: #333; }
 </style>
 </head>
 <body>
@@ -423,32 +554,118 @@
     <section class="col-input">
       <div class="col-title">✈️ 旅行需求</div>
 
-      <!-- 已有会话显示调整入口 -->
-      <div v-if="currentThreadId && finalPlan" class="adjust-area">
+      <!-- 方案完成后的三方选择面板 -->
+      <div v-if="currentThreadId && finalPlan && !running && !adjustRunning" class="decision-panel">
+        <div class="decision-title">
+          <span class="dot"></span>
+          ✅ 方案已生成！请选择下一步
+        </div>
+        <div class="decision-btns">
+          <button class="approve" @click="decisionMode = ''">
+            <span class="big-icon">✅</span>
+            <span class="label">批准方案</span>
+            <span class="hint">方案满意，收藏即可</span>
+          </button>
+          <button :class="{ selected: decisionMode === 'revise' }" @click="decisionMode = decisionMode === 'revise' ? '' : 'revise'">
+            <span class="big-icon">🛠️</span>
+            <span class="label">修订某方面</span>
+            <span class="hint">只重跑不满意的环节</span>
+          </button>
+          <button :class="{ selected: decisionMode === 'add' }" @click="decisionMode = decisionMode === 'add' ? '' : 'add'">
+            <span class="big-icon">✍️</span>
+            <span class="label">追加需求</span>
+            <span class="hint">合并新条件，完整重跑</span>
+          </button>
+        </div>
+
+        <!-- 修订某方面 -->
+        <div v-if="decisionMode === 'revise'" class="decision-sub">
+          <h4>选择要修订的方面（多选）</h4>
+          <div class="revise-options">
+            <label><input type="checkbox" v-model="reviseTargets" value="itinerary" /> 📅 行程/景点</label>
+            <label><input type="checkbox" v-model="reviseTargets" value="budget" /> 💰 预算</label>
+            <label><input type="checkbox" v-model="reviseTargets" value="safety" /> 🛡️ 安全提示</label>
+            <label><input type="checkbox" v-model="reviseTargets" value="coordinator" /> 🔄 基础需求（全重跑）</label>
+          </div>
+          <textarea
+            v-model="adjustInput"
+            placeholder="描述具体修改意见，例如「预算改成3000」「景点不要爬山的」"
+            :disabled="adjustRunning"
+            style="width:100%; min-height:60px; padding:8px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); font-size:13px; resize:vertical;"
+          ></textarea>
+          <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+            <button class="btn-primary" :disabled="adjustRunning || !adjustInput.trim()" @click="startAdjust">
+              <span v-if="adjustRunning" class="spinner"></span>
+              <span v-else>⚙️ 局部重跑</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 追加需求 -->
+        <div v-if="decisionMode === 'add'" class="decision-sub">
+          <h4>追加新条件（会合并到需求协调 → 完整重跑）</h4>
+          <textarea
+            v-model="adjustInput"
+            placeholder="例如：我还想去都江堰，预算提高到6000，带父母同行…"
+            :disabled="adjustRunning"
+            style="width:100%; min-height:60px; padding:8px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); font-size:13px; resize:vertical;"
+          ></textarea>
+          <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+            <button class="btn-primary" :disabled="adjustRunning || !adjustInput.trim()" @click="startAdjustFullRerun">
+              <span v-if="adjustRunning" class="spinner"></span>
+              <span v-else>🔄 完整重跑</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 已有方案但正在调整中 -->
+      <div v-if="currentThreadId && finalPlan && (running || adjustRunning)" class="adjust-area">
         <div style="margin-bottom:8px;">
           <span class="adjust-badge">已载入方案</span>
           <span style="font-size:11px; color:var(--text-muted); font-family:monospace;">{{ currentThreadId }}</span>
           <button class="btn-secondary" style="padding:2px 10px; font-size:11px; margin-left:8px;" @click="resetView">新建</button>
-        </div>
-        <textarea
-          v-model="adjustInput"
-          placeholder="💡 修改方案：例如「预算改成3000」「加一天行程」「换个目的地」…"
-          :disabled="adjustRunning"
-        ></textarea>
-        <div style="display:flex; justify-content:flex-end; margin-top:8px;">
-          <button class="btn-primary" :disabled="adjustRunning || !adjustInput.trim()" @click="startAdjust">
-            <span v-if="adjustRunning" class="spinner"></span>
-            <span v-else>⚙️ 智能调整</span>
-          </button>
         </div>
       </div>
 
       <!-- 初始规划输入 -->
       <template v-if="!currentThreadId">
         <div class="input-area">
+          <!-- 必填项：目的地 + 日期范围 -->
+          <div class="form-row">
+            <div class="form-field">
+              <label>📍 目的地 <span class="required">*</span></label>
+              <input
+                type="text"
+                v-model="destCity"
+                placeholder="例如：成都"
+                :disabled="running"
+                style="width:100%; padding:8px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); font-size:13px;"
+              />
+            </div>
+            <div class="form-field">
+              <label>📅 开始日期 <span class="required">*</span></label>
+              <input
+                type="date"
+                v-model="destStartDate"
+                :disabled="running"
+                style="width:100%; padding:8px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); font-size:13px;"
+              />
+            </div>
+            <div class="form-field">
+              <label>📅 结束日期 <span class="required">*</span></label>
+              <input
+                type="date"
+                v-model="destEndDate"
+                :disabled="running"
+                style="width:100%; padding:8px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); font-size:13px;"
+              />
+            </div>
+          </div>
+          <!-- 其他可选需求 -->
           <textarea
             v-model="userInput"
-            placeholder="描述你的旅行计划，例如：我想去成都旅游3天2晚，两个人，预算5000元，喜欢大熊猫和美食"
+            placeholder="💡 其他需求（可选）：两个人、预算5000元、喜欢大熊猫和美食…"
             @keydown.ctrl.enter="startPlan"
             :disabled="running"
           ></textarea>
@@ -457,17 +674,17 @@
               <input type="checkbox" v-model="mockMode" />
               使用 Mock（跳过真实 LLM + API）
             </label>
-            <button class="btn-primary" :disabled="running || !userInput.trim()" @click="startPlan">
+            <button class="btn-primary" :disabled="running || !canSubmit()" @click="startPlan">
               <span v-if="running" class="spinner"></span>
               <span v-else>🚀 开始规划</span>
             </button>
           </div>
         </div>
         <div class="quick-prompts">
-          <span class="chip" @click="quickInput('我想去成都旅游3天2晚，两个人，预算5000元，喜欢大熊猫和美食')">成都·熊猫美食</span>
-          <span class="chip" @click="quickInput('我想去北京旅游4天3晚，预算8000元，带父母，文化历史偏好')">北京·亲子文化</span>
-          <span class="chip" @click="quickInput('我想去三亚5天4晚，情侣度假，预算15000元')">三亚·情侣度假</span>
-          <span class="chip" @click="quickInput('我想去西安3天2晚，一个人背包游，预算3000元')">西安·背包独行</span>
+          <span class="chip" @click="quickFill('成都', '2026-10-01', '2026-10-05', '两个人，预算5000元，喜欢大熊猫和美食')">成都·熊猫美食</span>
+          <span class="chip" @click="quickFill('北京', '2026-09-25', '2026-09-28', '预算8000元，带父母，文化历史偏好')">北京·亲子文化</span>
+          <span class="chip" @click="quickFill('三亚', '2026-11-01', '2026-11-05', '情侣度假，预算15000元')">三亚·情侣度假</span>
+          <span class="chip" @click="quickFill('西安', '2026-10-15', '2026-10-17', '一个人背包游，预算3000元')">西安·背包独行</span>
         </div>
       </template>
 
@@ -523,6 +740,15 @@
                 <span class="agent-badge">{{ agentBadge(agent.node) }}</span>
               </div>
               <div class="agent-desc">{{ agent.desc }}</div>
+              <div v-if="agent.node === 'review' && Object.keys(reviewScores).length" class="score-bars">
+                <div v-for="item in scoreItems" :key="item.key" class="score-row">
+                  <span class="score-label">{{ item.label }}</span>
+                  <div class="score-track">
+                    <div class="score-fill" :class="scoreClass(item.val)" :style="{ width: (item.val * 10) + '%' }"></div>
+                  </div>
+                  <span class="score-val">{{ item.val }}</span>
+                </div>
+              </div>
               <div v-if="agentReports[agent.node]"
                    class="agent-report collapsed"
                    @click="reportExpanded[agent.node] = !reportExpanded[agent.node]"
@@ -582,11 +808,18 @@
           @click="loadHistory(h.thread_id)"
         >
           <div class="history-item-top">
-            <span class="history-id">{{ h.thread_id }}</span>
-            <span class="history-tag">已保存</span>
+            <span class="history-id" style="font-size:14px; font-weight:600;">{{ h.title || '未命名方案' }}</span>
+            <button class="btn-delete-item" @click.stop="deleteHistory(h.thread_id)" title="删除">🗑️</button>
           </div>
-          <div style="font-size:12px; color:var(--text-muted);">
-            checkpoints: {{ h.checkpoint_ids ? h.checkpoint_ids.length : '?' }}
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+            <template v-if="h.city">📍 {{ h.city }}</template>
+            <template v-if="h.days"> · 📅 {{ h.days }}天</template>
+            <template v-if="h.people"> · 👥 {{ h.people }}人</template>
+            <template v-if="h.budget"> · 💰 ¥{{ h.budget.toLocaleString() }}</template>
+            <template v-if="!h.city && !h.days && !h.people && !h.budget">{{ h.thread_id }}</template>
+          </div>
+          <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+            {{ h.final_plan_len || 0 }} 字方案
           </div>
         </div>
       </div>
@@ -653,6 +886,11 @@ createApp({
     const userInput = ref("");
     const adjustInput = ref("");
     const mockMode = ref(false);
+    const decisionMode = ref("");          // '' | 'revise' | 'add'
+    const reviseTargets = ref([]);          // ['itinerary', 'budget', ...]
+    const destCity = ref("");               // 必填：目的地
+    const destStartDate = ref("");           // 必填：开始日期 YYYY-MM-DD
+    const destEndDate = ref("");             // 必填：结束日期 YYYY-MM-DD
     const running = ref(false);
     const adjustRunning = ref(false);
     const error = ref("");
@@ -663,8 +901,21 @@ createApp({
     const completedNodes = ref([]);
     const revisingCount = ref(0);
     const revisingBannerShown = ref(false);
-    const agentReports = reactive({});
-    const reportExpanded = reactive({});
+    const agentReports = reactive({
+      coordinator: "", itinerary: "", budget: "",
+      safety: "", review: "", integrate: "",
+    });
+    const reportExpanded = reactive({
+      coordinator: false, itinerary: false, budget: false,
+      safety: false, review: false, integrate: false,
+    });
+    /* review 结构化评审的四维评分（后端 review_scores 事件字段） */
+    const reviewScores = reactive({});
+    const SCORE_LABELS = { completeness: "完整性", feasibility: "可行性", consistency: "一致性", budget_fit: "预算匹配" };
+    const scoreItems = computed(() => Object.entries(reviewScores).map(
+      ([k, v]) => ({ key: k, label: SCORE_LABELS[k] || k, val: Number(v) || 0 })
+    ));
+    const scoreClass = (v) => (v >= 7 ? "good" : v >= 5 ? "mid" : "low");
 
     const finalPlan = ref("");
     const totalMs = ref(0);
@@ -714,17 +965,56 @@ createApp({
       return "等待";
     }
     function quickInput(text) { userInput.value = text; }
+    function quickFill(city, startDate, endDate, extra) {
+      destCity.value = city;
+      destStartDate.value = startDate;
+      destEndDate.value = endDate;
+      userInput.value = extra || "";
+    }
+    function canSubmit() {
+      const hasCity = destCity.value && destCity.value.trim().length > 0;
+      const hasStart = !!destStartDate.value;
+      const hasEnd = !!destEndDate.value;
+      const validRange = hasStart && hasEnd && destStartDate.value <= destEndDate.value;
+      return hasCity && validRange;
+    }
+    // 计算天数（用于后端天数解析和展示）
+    function calcDays() {
+      if (!destStartDate.value || !destEndDate.value) return 0;
+      const s = new Date(destStartDate.value);
+      const e = new Date(destEndDate.value);
+      return Math.round((e - s) / 86400000) + 1;  // 含首尾
+    }
+    // 把必填项 + 选填项拼合成完整用户输入
+    function buildUserInput() {
+      const days = calcDays();
+      const parts = [`我想去${destCity.value}旅游`];
+      if (destStartDate.value && destEndDate.value) {
+        parts.push(`${destStartDate.value}至${destEndDate.value}`);
+      }
+      parts.push(`共${days}天`);
+      if (userInput.value && userInput.value.trim()) {
+        parts.push(userInput.value.trim());
+      }
+      return parts.join("，");
+    }
     function resetView() {
       currentThreadId.value = "";
       finalPlan.value = "";
       userInput.value = "";
       adjustInput.value = "";
+      destCity.value = "";
+      destStartDate.value = "";
+      destEndDate.value = "";
+      decisionMode.value = "";
+      reviseTargets.value = [];
       hitlWaiting.value = false;
       hitlReason.value = "";
       hitlStage.value = "";
       completedNodes.value = [];
-      Object.keys(agentReports).forEach(k => delete agentReports[k]);
-      Object.keys(reportExpanded).forEach(k => delete reportExpanded[k]);
+      for (const k of Object.keys(agentReports)) agentReports[k] = "";
+      Object.keys(reviewScores).forEach(k => delete reviewScores[k]);
+      for (const k of Object.keys(reportExpanded)) reportExpanded[k] = false;
     }
 
     /* ====== SSE 解析 ====== */
@@ -753,14 +1043,16 @@ createApp({
 
     /* ====== 新建规划 ====== */
     async function startPlan() {
-      if (!userInput.value.trim() || running.value) return;
+      if (!canSubmit() || running.value) return;
+      const inputText = buildUserInput();        // 必填+选填拼合
+      const isMock = mockMode.value;
       resetView();
       running.value = true; error.value = "";
       try {
         const resp = await fetch("/api/plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ user_input: userInput.value, mock: mockMode.value }),
+          body: JSON.stringify({ user_input: inputText, mock: isMock }),
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         await consumeSSE(resp, handlePlanEvent);
@@ -778,6 +1070,10 @@ createApp({
           activeNode.value = evt.node;
           if (!completedNodes.value.includes(evt.node)) completedNodes.value.push(evt.node);
           if (evt.report) agentReports[evt.node] = evt.report;
+          if (evt.node === "review" && evt.review_scores && Object.keys(evt.review_scores).length) {
+            Object.keys(reviewScores).forEach(k => delete reviewScores[k]);
+            Object.assign(reviewScores, evt.review_scores);
+          }
           break;
         case "revise":
           revisingCount.value = evt.count;
@@ -811,6 +1107,13 @@ createApp({
     /* ====== 调整 ====== */
     async function startAdjust() {
       if (!adjustInput.value.trim() || adjustRunning.value || !currentThreadId.value) return;
+      // 如果用户在「修订某方面」面板选了具体方面，用它来增强 modify_request
+      let modifyRequest = adjustInput.value;
+      if (decisionMode.value === 'revise' && reviseTargets.value.length > 0) {
+        const targetMap = { itinerary: '行程安排', budget: '预算估算', safety: '安全提示', coordinator: '基础需求（目的地/天数/人数）' };
+        const targetDesc = reviseTargets.value.map(t => targetMap[t] || t).join('、');
+        modifyRequest = `【重点修改：${targetDesc}】 ${adjustInput.value}`;
+      }
       adjustRunning.value = true; error.value = ""; adjusted.value = true;
       try {
         const resp = await fetch("/api/adjust", {
@@ -818,13 +1121,39 @@ createApp({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             thread_id: currentThreadId.value,
-            modify_request: adjustInput.value,
+            modify_request: modifyRequest,
             mock: mockMode.value,
           }),
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         await consumeSSE(resp, handleAdjustEvent);
         adjustInput.value = "";
+        decisionMode.value = "";
+        reviseTargets.value = [];
+      } catch (e) { error.value = e.message || String(e); }
+      finally { adjustRunning.value = false; activeNode.value = ""; refreshHistory(); }
+    }
+
+    // 追加需求 → 强制完整重跑（adjust from coordinator）
+    async function startAdjustFullRerun() {
+      if (!adjustInput.value.trim() || adjustRunning.value || !currentThreadId.value) return;
+      const modifyRequest = `【追加新需求】 ${adjustInput.value}`;
+      adjustRunning.value = true; error.value = ""; adjusted.value = true;
+      try {
+        const resp = await fetch("/api/adjust", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            thread_id: currentThreadId.value,
+            modify_request: modifyRequest,
+            mock: mockMode.value,
+            force_start: "coordinator",  // 强制从 coordinator 完整重跑
+          }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        await consumeSSE(resp, handleAdjustEvent);
+        adjustInput.value = "";
+        decisionMode.value = "";
       } catch (e) { error.value = e.message || String(e); }
       finally { adjustRunning.value = false; activeNode.value = ""; refreshHistory(); }
     }
@@ -838,6 +1167,10 @@ createApp({
           activeNode.value = evt.node;
           if (!completedNodes.value.includes(evt.node)) completedNodes.value.push(evt.node);
           if (evt.report) agentReports[evt.node] = evt.report;
+          if (evt.node === "review" && evt.review_scores && Object.keys(evt.review_scores).length) {
+            Object.keys(reviewScores).forEach(k => delete reviewScores[k]);
+            Object.assign(reviewScores, evt.review_scores);
+          }
           break;
         case "revise":
           revisingCount.value = evt.count;
@@ -897,6 +1230,10 @@ createApp({
           activeNode.value = evt.node;
           if (!completedNodes.value.includes(evt.node)) completedNodes.value.push(evt.node);
           if (evt.report) agentReports[evt.node] = evt.report;
+          if (evt.node === "review" && evt.review_scores && Object.keys(evt.review_scores).length) {
+            Object.keys(reviewScores).forEach(k => delete reviewScores[k]);
+            Object.assign(reviewScores, evt.review_scores);
+          }
           break;
         case "done":
           finalPlan.value = evt.final_plan || finalPlan.value;
@@ -957,16 +1294,17 @@ createApp({
 
     return {
       view, mockMode,
-      userInput, adjustInput,
+      userInput, adjustInput, destCity, destStartDate, destEndDate,
+      decisionMode, reviseTargets,
       running, adjustRunning, error, adjusted,
       currentThreadId, activeNode, completedNodes, revisingCount, revisingBannerShown,
-      agentReports, reportExpanded,
+      agentReports, reportExpanded, reviewScores, scoreItems, scoreClass,
       finalPlan, totalMs, allAgents,
       hitlWaiting, hitlActioning, hitlReason, hitlStage,
       historyList, historyLoading, selectedHistory,
       currentAgentLabel, totalMsText, renderedFinalPlan, renderedHistoryPlan,
-      agentItemClass, agentBadge, quickInput, resetView,
-      startPlan, startAdjust, hitlDecide, checkHitlStatus,
+      agentItemClass, agentBadge, quickInput, quickFill, canSubmit, resetView,
+      startPlan, startAdjust, startAdjustFullRerun, hitlDecide, checkHitlStatus,
       switchView, refreshHistory, loadHistory, deleteHistory, goToPlanWithHistory,
     };
   }

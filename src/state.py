@@ -71,6 +71,9 @@ class TravelState(TypedDict, total=False):
     # 用户原始需求（Coordinator 归一化后写入）
     user_request: Annotated[str, _override_reducer]
 
+    # Coordinator 解析后的结构化信息（所有节点共享，不再重复解析）
+    parsed_info: Annotated[dict, _override_reducer]
+
     # 各 Agent 子报告
     itinerary: Annotated[str, _override_reducer]
     budget: Annotated[str, _override_reducer]
@@ -81,15 +84,27 @@ class TravelState(TypedDict, total=False):
     review_status: Annotated[ReviewStatus, _override_reducer]
     revision_count: Annotated[int, _override_reducer]
 
+    # Review 结构化评审产出：四维评分 0-10
+    # （completeness/feasibility/consistency/budget_fit；fallback 路径为空 dict）
+    review_scores: Annotated[dict, _override_reducer]
+
+    # Review 主动要求人工审核（LLM 判定 needs_human 或任一维 <5），
+    # 由 hitl_gate_route 消费；每次 review 运行都会覆盖写
+    hitl_flag: Annotated[bool, _override_reducer]
+
     # 路由信号 & 最终方案
     next_node: Annotated[Stage, _override_reducer]
     final_plan: Annotated[str, _override_reducer]
 
-    # HITL 状态标记（waiting / resolved_approve / resolved_revise / 空）
+    # HITL 状态标记（"waiting" 表示正等待人工决策；空表示无等待）
     hitl_status: Annotated[str, _override_reducer]
     hitl_stage: Annotated[str, _override_reducer]       # 哪个节点触发的 HITL
     hitl_reason: Annotated[str, _override_reducer]      # 为什么进 HITL
     hitl_next_node: Annotated[str, _override_reducer]   # 超时场景 approve 后往哪走
+
+    # HITL 恢复上下文：非空表示本次 HITL 发生在「增量调整子图」里，
+    # 值为该子图的起点节点。恢复时必须重建同一张子图，否则拓扑不一致。
+    hitl_subgraph_start: Annotated[str, _override_reducer]
 
     # 所有 Agent 子报告的汇总（便于持久化 & 历史检索）
     sub_reports: Annotated[list[dict], _append_reducer]

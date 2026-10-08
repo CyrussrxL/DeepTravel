@@ -18,11 +18,25 @@ from langchain_core.messages import HumanMessage, AnyMessage
 load_dotenv()
 
 # --------- 超时常量 ---------
-LLM_TIMEOUT_SEC = 90  # LLM 调用超时（秒），超时后触发 HITL
+LLM_TIMEOUT_SEC = 300  # LLM 调用超时（秒），qwen3.8-27b 大模型长输出需要更久
 
 # --------- LLM 初始化 ---------
 
 _mock_flag = os.getenv("MOCK_LLM", "false").lower() in ("true", "1", "yes")
+
+
+def _make_http_client():
+    """
+    创建禁用系统代理的 httpx.Client。
+
+    背景：部分代理工具（Clash/v2rayN 等）会给所有请求注入
+    127.0.0.1 代理，但代理可能对阿里云域名 SSL 转发不兼容
+    （表现为 SSL: UNEXPECTED_EOF_WHILE_READING）。
+    LLM API 端点通常走国内直连，绕过系统代理更稳定。
+    """
+    import httpx
+    transport = httpx.HTTPTransport(proxy=None)
+    return httpx.Client(transport=transport, timeout=httpx.Timeout(90))
 
 
 def get_llm():
@@ -34,15 +48,25 @@ def get_llm():
     2. DASHSCOPE_API_KEY 存在 → ChatOpenAI + DashScope 兼容端点
        （qwen3.8 新系列模型必须走 compatible-mode，旧 ChatTongyi 端点不认）
     3. OPENAI_API_KEY 兜底
+
+    所有路径均禁用系统代理（通过自定义 http_client），
+    避免 Clash/v2rayN 等代理工具的 SSL 干扰。
     """
     if is_mock_mode():
         raise RuntimeError("MOCK_LLM=true, skip real LLM call")
 
     from langchain_openai import ChatOpenAI
 
+    client = _make_http_client()
+
     # 主路径：DashScope 兼容端点
     dashscope_key = os.getenv("DASHSCOPE_API_KEY")
     if dashscope_key:
+        # qwen3 系列默认开启思考模式，reasoning 内容会占用 output token 预算。
+        # max_tokens 被思考吃光时 content 会返回空字符串（实测 2000 不够用），
+        # 因此默认关闭思考。中文长报告 ≈1.5 字/token，6000 实测会在 Day 2/3
+        # 截断（4325 字报告即触顶），提高到 8000。
+        enable_thinking = os.getenv("DASHSCOPE_ENABLE_THINKING", "false").lower() in ("true", "1", "yes")
         return ChatOpenAI(
             api_key=dashscope_key,
             base_url=os.getenv(
@@ -51,6 +75,9 @@ def get_llm():
             ),
             model=os.getenv("DASHSCOPE_MODEL", "qwen3.8-27b"),
             temperature=0.2,
+            max_tokens=int(os.getenv("DASHSCOPE_MAX_TOKENS", "8000")),
+            http_client=client,
+            extra_body={"enable_thinking": enable_thinking},
         )
 
     # 兜底：原生 OpenAI
@@ -61,6 +88,8 @@ def get_llm():
             base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             temperature=0.2,
+            max_tokens=2000,
+            http_client=client,
         )
 
     raise RuntimeError("No LLM API key found (DASHSCOPE_API_KEY or OPENAI_API_KEY)")

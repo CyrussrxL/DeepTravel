@@ -30,7 +30,10 @@ from pydantic import BaseModel
 
 from .graph import build_graph, list_sessions, get_session_state
 
-load_dotenv()
+load_dotenv(override=True)  # 强制用 .env 覆盖进程内环境变量，避免残留污染
+
+# 启动时重置 MOCK_LLM 到 .env 值（防止之前 E2E mock 请求粘住 true）
+os.environ["MOCK_LLM"] = os.getenv("MOCK_LLM", "false")
 
 # --------- FastAPI App ---------
 
@@ -119,6 +122,7 @@ class AdjustRequest(BaseModel):
     thread_id: str                # 必须：要调整的会话
     modify_request: str           # 用户修改请求
     mock: bool = False
+    force_start: str | None = None  # 可选：强制从哪个节点开始（跳过 LLM 判断）
 
 
 # --------- 辅助：把 LangGraph 事件转为 SSE ---------
@@ -147,6 +151,9 @@ def _event_from_node(node_name: str, state_update: dict, duration_ms: int) -> di
     hitl_reason = state_update.get("hitl_reason", "")
     hitl_next_node = state_update.get("hitl_next_node", "")
 
+    # review 结构化评审的四维评分（fallback/mock 路径为空 dict）
+    review_scores = state_update.get("review_scores") or {}
+
     return {
         "type": "node",
         "node": node_name,
@@ -163,22 +170,42 @@ def _event_from_node(node_name: str, state_update: dict, duration_ms: int) -> di
         "hitl_stage": hitl_stage,
         "hitl_reason": hitl_reason,
         "hitl_next_node": hitl_next_node,
+        "review_scores": review_scores,
     }
 
 
 # --------- SSE 端点 ---------
+
+
+@app.on_event("startup")
+def _cleanup_checkpoints_on_startup():
+    """启动时清理每个 thread 的旧 checkpoint（默认保留最近 20 条），防库膨胀。"""
+    from .graph import cleanup_old_checkpoints
+
+    try:
+        deleted = cleanup_old_checkpoints(keep_last=20)
+        if deleted:
+            print(f"[startup] 已清理 {deleted} 条旧 checkpoint", flush=True)
+    except Exception as exc:
+        print(f"[startup] checkpoint 清理失败（不影响服务）: {exc}", flush=True)
+
 
 @app.post("/api/plan")
 def plan(req: PlanRequest) -> StreamingResponse:
     """
     提交旅行规划请求，通过 SSE 逐节点推送进度事件（同步 StreamingResponse）。
     """
+    # 防御：空输入直接 400，不让 LLM 瞎编
+    if not req.user_input or not req.user_input.strip():
+        raise HTTPException(status_code=400, detail="user_input 不能为空")
+
     print(f"[plan] 进入 plan() mock={req.mock} user_input={req.user_input[:20]}", flush=True)
     # mock 开关：req.mock 优先；否则看环境变量；都没有就不 mock
     if req.mock:
         os.environ["MOCK_LLM"] = "true"
-    elif os.getenv("MOCK_LLM", "").lower() not in ("true", "1", "yes"):
+    else:
         os.environ.pop("MOCK_LLM", None)
+    print(f"[plan] MOCK_LLM env={os.getenv('MOCK_LLM', '(unset)')}", flush=True)
 
     print(f"[plan] 调 build_graph()...", flush=True)
     graph = build_graph()
@@ -188,6 +215,8 @@ def plan(req: PlanRequest) -> StreamingResponse:
     initial_state = {
         "messages": [HumanMessage(content=req.user_input)],
         "revision_count": req.initial_revision_count,
+        # 全新规划走完整图，清掉上一次 adjust 留下的子图恢复标记
+        "hitl_subgraph_start": "",
     }
     print(f"[plan] 返回 StreamingResponse, thread_id={thread_id}", flush=True)
 
@@ -332,6 +361,21 @@ def session_delete(thread_id: str):
 @app.post("/api/adjust")
 def adjust(req: AdjustRequest) -> StreamingResponse:
     """交互式调整已有方案（同步 StreamingResponse）。"""
+    # 防御：空调整指令直接 400
+    if not req.modify_request or not req.modify_request.strip():
+        raise HTTPException(status_code=400, detail="modify_request 不能为空")
+    if not req.thread_id:
+        raise HTTPException(status_code=400, detail="thread_id 不能为空")
+    # force_start 必须是合法节点名，否则 build_adjust_graph 编译时才炸（SSE 里报晦涩错误）
+    if req.force_start and req.force_start not in (
+        "coordinator", "itinerary", "budget", "safety", "review", "integrate",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"force_start 非法：{req.force_start}，"
+                   "可选 coordinator/itinerary/budget/safety/review/integrate",
+        )
+
     if req.mock:
         os.environ["MOCK_LLM"] = "true"
     elif os.getenv("MOCK_LLM", "").lower() not in ("true", "1", "yes"):
@@ -343,10 +387,13 @@ def adjust(req: AdjustRequest) -> StreamingResponse:
     from .graph import build_graph
     full_graph = build_graph()
     state_obj = full_graph.get_state({"configurable": {"thread_id": req.thread_id}})
-    if state_obj is None:
+    # 注意：未知 thread_id 的 get_state 返回空 snapshot（values={}），不是 None，
+    # 必须校验 values 里有内容，否则会把调整请求当成新会话跑下去
+    if state_obj is None or not state_obj.values or not state_obj.values.get("messages"):
         raise HTTPException(status_code=404, detail=f"会话 {req.thread_id} 不存在")
     original_state = dict(state_obj.values)
-    start_node = determine_adjust_start(original_state, req.modify_request)
+    # force_start 优先（前端指定），否则 LLM/关键词判断
+    start_node = req.force_start or determine_adjust_start(original_state, req.modify_request)
 
     adjust_graph = build_adjust_graph(start_node)
     config = {"configurable": {"thread_id": req.thread_id}}
@@ -357,10 +404,25 @@ def adjust(req: AdjustRequest) -> StreamingResponse:
     ]
     if start_node == "coordinator":
         adjust_state["user_request"] = req.modify_request
+    else:
+        # 非 coordinator 起点时，coordinator 不会重跑、parsed_info 不会刷新，
+        # 而下游节点（budget/safety/review/integrate）的 prompt 读的都是
+        # state["user_request"]——必须把调整意见附加上，否则 LLM 看不到新要求
+        adjust_state["user_request"] = (
+            (original_state.get("user_request", "") or "")
+            + f"\n[用户调整] {req.modify_request}"
+        )
     # 保留已有 revision_count——多次 adjust 可以累积触发 HITL
     # 但第一次 adjust 如果 revision_count 是 0，那 review mock 会 APPROVED（正常）
     # 连续多次 adjust 后 revision_count 累积 → 超限 → HITL
     adjust_state["review_status"] = "pending"
+    # 增量改预算时 parsed_info.budget 不会更新（子图不含 coordinator），
+    # review 交叉校验会拿旧预算对比新预算报告 → 误报 finding。
+    # 提取到新预算则同步覆盖。
+    from .adjust import apply_budget_to_state
+    apply_budget_to_state(adjust_state, req.modify_request)
+    # 记录子图起点：中途进 HITL 时，/api/hitl 要靠它重建同一张子图
+    adjust_state["hitl_subgraph_start"] = start_node
 
     def generate():
         total_start = time.time()
@@ -377,6 +439,8 @@ def adjust(req: AdjustRequest) -> StreamingResponse:
         all_sub_reports: list[dict] = []
         final_plan = ""
         last_revision = 0
+        hitl_triggered = False
+        hitl_info: dict = {}
 
         try:
             for event in adjust_graph.stream(adjust_state, config):
@@ -396,6 +460,19 @@ def adjust(req: AdjustRequest) -> StreamingResponse:
                     node_evt = _event_from_node(node_name, state_update, 0)
                     yield f"data: {json.dumps(node_evt, ensure_ascii=False)}\n\n"
 
+                    # 检测 HITL 触发（和 /api/plan 保持一致，否则前端不会弹人工审核面板）
+                    if (node_name == "hitl"
+                        or state_update.get("hitl_status") == "waiting"
+                        or state_update.get("next_node") == "hitl"):
+                        hitl_triggered = True
+                        hitl_info = {
+                            "hitl_stage": state_update.get("hitl_stage", "") or "review",
+                            "hitl_reason": state_update.get("hitl_reason", "") or "需要人工审核",
+                            "hitl_next_node": state_update.get("hitl_next_node", ""),
+                            "revision_count": cur_rev,
+                        }
+                        yield f"data: {json.dumps({'type': 'hitl_start', **hitl_info}, ensure_ascii=False)}\n\n"
+
                     if state_update.get("next_node") == "end":
                         break
         except Exception as exc:
@@ -410,6 +487,9 @@ def adjust(req: AdjustRequest) -> StreamingResponse:
             "total_ms": int((time.time() - total_start) * 1000),
             "revision_count": last_revision,
             "adjusted": True,
+            "hitl_triggered": hitl_triggered,
+            "hitl_stage": hitl_info.get("hitl_stage", ""),
+            "hitl_reason": hitl_info.get("hitl_reason", ""),
         }
         yield f"data: {json.dumps(done_evt, ensure_ascii=False)}\n\n"
 
@@ -430,23 +510,36 @@ class HitlDecisionRequest(BaseModel):
 @app.post("/api/hitl/{thread_id}")
 def hitl_decision(thread_id: str, req: HitlDecisionRequest) -> StreamingResponse:
     """人工审核决策（同步 StreamingResponse）。"""
+    from .adjust import build_adjust_graph
     from .graph import build_graph
     from .hitl import hitl_approve_state, hitl_revise_state
 
-    graph = build_graph()
     config = {"configurable": {"thread_id": thread_id}}
-    state_obj = graph.get_state(config)
-    if state_obj is None:
+    # 先读取 state，判断这次 HITL 是完整图触发的还是增量调整子图触发的
+    state_obj = build_graph().get_state(config)
+    # 同 /api/adjust：未知 thread_id 返回空 snapshot，不能只判 None
+    if state_obj is None or not state_obj.values or not state_obj.values.get("messages"):
         raise HTTPException(status_code=404, detail=f"会话 {thread_id} 不存在")
+
+    values = dict(state_obj.values)
+    sub_start = values.get("hitl_subgraph_start") or ""
+    # HITL 在子图里触发时必须用同一张子图恢复，否则按全图拓扑续跑会走错节点
+    graph = build_adjust_graph(sub_start) if sub_start else build_graph()
+    if sub_start:
+        print(f"[hitl] 使用增量调整子图恢复（起点={sub_start}）", flush=True)
 
     # 注入人工决策（修改 checkpoint 里的 state）
     if req.decision == "approve":
-        human_update = hitl_approve_state(dict(state_obj.values))
+        human_update = hitl_approve_state(values)
     elif req.decision == "revise":
-        human_update = hitl_revise_state(dict(state_obj.values))
+        human_update = hitl_revise_state(values)
         from langchain_core.messages import HumanMessage
         if req.note:
             human_update["messages"] = [HumanMessage(content=f"[人工修订] {req.note}")]
+            # 人工修订带新预算时同样要同步 parsed_info（同 /api/adjust 的处理）
+            # human_update 是增量 dict，必须传 base=values 取完整 parsed_info
+            from .adjust import apply_budget_to_state
+            apply_budget_to_state(human_update, req.note, base=values)
     else:
         def gen_err():
             err_evt = {"type": "error", "message": f"无效决策: {req.decision}"}

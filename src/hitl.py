@@ -41,26 +41,28 @@ def hitl_gate_route(state: TravelState) -> str:
 
     # 触发 HITL 的条件
     hitl_triggered = False
-    reason = ""
 
-    # 条件 1: revise 且 revision_count 超限
-    if review_status == "revise" and revision_count >= MAX_REVISION_BEFORE_HITL:
+    # 条件 1（主路径）: review 结构化评审主动要求人工
+    # （LLM needs_human=true，或任一维评分 < 5 —— 代码级门控，见 review_node）
+    if state.get("hitl_flag"):
         hitl_triggered = True
-        reason = f"连续修订 {revision_count} 次，已达自动修订上限"
 
-    # 条件 2: feedback 包含不确定性关键词
+    # 条件 2: revise 且 revision_count 超限
+    if not hitl_triggered and review_status == "revise" and revision_count >= MAX_REVISION_BEFORE_HITL:
+        hitl_triggered = True
+
+    # 条件 3: 任意节点超时（由节点自身 next_node="hitl" 触发，这里兜底检查）
+    if not hitl_triggered and state.get("hitl_status") == "waiting" and state.get("hitl_reason", "").find("超时") >= 0:
+        hitl_triggered = True
+
+    # 条件 4（fallback）: 不确定性关键词 —— 仅当 review 走了旧路径
+    # （结构化失败回退，review_scores 为空）时才用词典匹配，避免误触发
     uncertain_kw = ["不确定", "存疑", "可能", "有疑问", "难以判断", "需要确认", "保守"]
-    if review_status == "approved":
+    if not hitl_triggered and review_status == "approved" and not state.get("review_scores"):
         for kw in uncertain_kw:
             if kw in review_feedback:
                 hitl_triggered = True
-                reason = f"审核反馈包含不确定词「{kw}」：{review_feedback[:100]}"
                 break
-
-    # 条件 3: 任意节点超时（由节点自身 next_node="hitl" 触发，这里兜底检查）
-    if state.get("hitl_status") == "waiting" and state.get("hitl_reason", "").find("超时") >= 0:
-        hitl_triggered = True
-        reason = state.get("hitl_reason", "")
 
     if hitl_triggered:
         return "hitl"
@@ -74,32 +76,18 @@ def hitl_gate_route(state: TravelState) -> str:
 
 def hitl_node(state: TravelState) -> dict:
     """
-    人工审核节点。
+    人工审核节点 —— 唯一的语义是「暂停并等待人工决策」。
 
     hitl 是一个"暂停点"——执行完这个节点后图就停止了（next_node='end'）。
     用户通过 /api/hitl/{thread_id} POST 注入人工决策，
     LangGraph 会从 checkpoint 恢复，带着新 state 继续执行。
 
-    恢复执行时（hitl_status != "waiting"）：
-      - approved  → 走 hitl_next_node 或默认 integrate
-      - revised   → 走 itinerary 重跑
+    ⚠️ 恢复时本节点不会再执行：/api/hitl 用 graph.update_state 写入决策后，
+    LangGraph 会依据 hitl 的出边重新计算 next，直接从 integrate / 子图起点续跑。
+    因此本节点不需要、也不能依赖 「resolved_*」 之类的标记来判断是否恢复
+    （那类标记会在 state 里残留，导致下一次触发 HITL 时被误判成"正在恢复"，
+    从而跳过暂停、直接回退重跑）。
     """
-    # 如果已经有决策，跳过等待直接继续
-    hitl_status = state.get("hitl_status", "")
-    if hitl_status in ("resolved_approve", "resolved_revise"):
-        if hitl_status == "resolved_approve":
-            next_node = state.get("hitl_next_node") or state.get("next_node") or "integrate"
-            # 如果 review_status 被设成 approved，那就直接到 integrate
-            if state.get("review_status") == "approved":
-                next_node = "integrate"
-        else:  # resolved_revise
-            next_node = "itinerary"
-        print(f"[HITL] 恢复执行 — status={hitl_status}, 前往 {next_node}")
-        return {
-            "next_node": next_node,
-            "hitl_status": hitl_status,
-        }
-
     # 正常等待流程
     revision_count = state.get("revision_count", 0)
     review_feedback = state.get("review_feedback", "")
@@ -133,14 +121,14 @@ def hitl_node(state: TravelState) -> dict:
 
 def hitl_approve_state(state: TravelState) -> dict:
     """
-    人工审核：批准（写入 state，让后续节点消费）。
+    人工审核：批准。
 
-    超时场景：hitl_stage 非空 → 清除 hitl 标记，保留用户可能已手动补充的字段，
-             让图根据 hitl_next_node 或 review_status 继续执行。
-    review 场景：review_status=approved → integrate。
+    只写业务字段（next_node / review_status），命中后续节点的路由；
+    同时把 hitl_status 清空，避免等待标记残留到下一次触发。
+    超时场景：按 hitl_next_node 续跑；review 场景：approved → integrate。
     """
     update: dict[str, Any] = {
-        "hitl_status": "resolved_approve",
+        "hitl_status": "",
         "hitl_stage": "",
         "hitl_reason": "",
     }
@@ -162,7 +150,7 @@ def hitl_revise_state(state: TravelState) -> dict:
         "review_status": "revise",
         "revision_count": 0,  # 重置让 LLM 再跑
         "next_node": "itinerary",
-        "hitl_status": "resolved_revise",
+        "hitl_status": "",
         "hitl_stage": "",
         "hitl_reason": "",
     }

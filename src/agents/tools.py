@@ -19,7 +19,6 @@ load_dotenv()
 
 AMAP_KEY = os.getenv("AMAP_API_KEY", "")
 SENIVERSE_KEY = os.getenv("SENIVERSE_API_KEY", "")
-FLIGGY_KEY = os.getenv("FLIGGY_API_KEY", "")
 
 REQUEST_TIMEOUT = 10
 
@@ -242,17 +241,3 @@ def get_weather_daily(city_location: str, days: int = 3) -> list[dict]:
     except Exception as exc:
         print(f"  [tools.get_weather_daily] 失败: {exc}")
         return []
-
-
-# ==========================================================================
-# 飞猪（占位，无公开 HTTP API）
-# ==========================================================================
-
-def search_flights(*args: Any, **kwargs: Any) -> list[dict]:
-    """飞猪航班查询（预留占位，无公开 HTTP API 可直连）"""
-    return []
-
-
-def search_hotels(*args: Any, **kwargs: Any) -> list[dict]:
-    """飞猪酒店查询（预留占位，无公开 HTTP API 可直连）"""
-    return []
