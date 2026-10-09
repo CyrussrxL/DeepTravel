@@ -15,11 +15,10 @@ DeepTravel 独立调整子图 (Adjust Subgraph，并行拓扑)
                      ▼
               integrate → END
 
-按起点的并行拓扑（budget/safety 的 prompt 读 state["itinerary"]，
-所以 itinerary 起点必须先跑行程、再让预算/安全并行）：
+按起点的并行拓扑（两阶段依赖 + 段内并行，对齐主图）：
 
-    coordinator:  coordinator → {itinerary, budget, safety} ∥ → review
-                  （同主图：budget/safety 基于归一化需求估算，不依赖行程输出）
+    coordinator:  coordinator → itinerary → {budget, safety} ∥ → review
+                  （同主图：行程先生成，预算/安全基于行程输出并行重算）
     itinerary:    itinerary → {budget, safety} ∥ → review
                   （新行程先落 state，预算/安全基于新行程并行重算）
     budget:       {budget, safety} ∥ → review
@@ -28,7 +27,7 @@ DeepTravel 独立调整子图 (Adjust Subgraph，并行拓扑)
     integrate:    integrate → END
 
 revise / HITL-revise 回退目标 = 起点所在 superstep（revise_targets），
-后续拓扑自动并行，语义与旧串行版一致（回到最早受影响节点）。
+itinerary 完成后其出边自动 fan-out {b,s}，语义与旧串行版一致（回到最早受影响节点）。
 """
 
 from __future__ import annotations
@@ -63,8 +62,11 @@ NODE_INDEX = {n: i for i, n in enumerate(AGENT_ORDER)}
 _ADJUST_TOPO = {
     "coordinator": {
         "entry": ["coordinator"],
-        "fanout": {"coordinator": ["itinerary", "budget", "safety"]},
-        "revise": ["itinerary", "budget", "safety"],
+        "fanout": {
+            "coordinator": ["itinerary"],
+            "itinerary": ["budget", "safety"],
+        },
+        "revise": ["itinerary"],
     },
     "itinerary": {
         "entry": ["itinerary"],

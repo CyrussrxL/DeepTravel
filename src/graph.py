@@ -1,30 +1,31 @@
 """
-DeepTravel 六阶段有向图构建（fan-out 并行拓扑）
+DeepTravel 六阶段有向图构建（两阶段依赖 + 段内并行拓扑）
 
 架构：
             coordinator ← START
-                 │ 三路 fan-out（同一 superstep 并发执行）
-     ┌───────────┼───────────┐
-     ▼           ▼           ▼
- itinerary    budget      safety   ◄──┐
-     └───────────┼───────────┘        │
-                 ▼ fan-in            │ review=revise：
-              review ────────────────┘ 三路并行重跑
-                 │       │
+                 │ 单跳（行程先生成，作为下游上下文）
+                 ▼
+             itinerary
+                 │ 两路 fan-out（budget/safety 互不依赖，但都依赖行程输出）
+     ┌───────────┴───────────┐
+     ▼                       ▼
+   budget                   safety   ◄──┐
+     └───────────┬───────────┘          │
+                 ▼ fan-in                │ review=revise：
+              review ────────────────────┘ 回退 itinerary（单跳，行程重生成后
+                 │       │                再 fan-out {b,s} 重跑）
             approve    hitl gate
                  │       │
                  ▼       ▼
-            integrate   hitl（人工决策，revise 恢复 → 三路并行重跑）
-                 │
-                END
+            integrate   hitl（人工决策，revise 恢复 → itinerary 重跑）
 
-并行依据：budget（目的地消费水平估算）与 safety（天气+城市级安全）
-不依赖 itinerary 的输出，只依赖 coordinator 的归一化结果。
+依赖依据：budget（按行程消费项拆分预算）与 safety（针对行程活动的安全提示）
+都依赖 itinerary 的输出作为上下文；budget 与 safety 之间互不依赖 → 段内并行。
 sub_reports 为 _append_reducer，并行写入安全；review 天然充当 fan-in 汇聚点。
 
 路由规则：
 - 串行段节点只写 state['next_node']，route_decision(state) 决定下一跳
-- fan-out 段（coordinator / revise / hitl 恢复）用 path 返回节点列表扇出
+- fan-out 段（coordinator→itinerary / itinerary→{b,s} / revise/hitl 恢复）用 path
 - 每个节点的 add_conditional_edges 提供 path_map 映射
 - 不混用 add_edge 和 add_conditional_edges（来自失败经验）
 """
@@ -153,57 +154,57 @@ def build_graph(checkpointer_path: str | None = None):
         "hitl": "hitl",  # 任意节点超时/异常都能触发 HITL
     }
 
-    # ---- fan-out 并行拓扑 ----
-    # 依赖分析：budget（目的地消费水平估算）与 safety（天气+城市级安全提示）
-    # 只依赖 coordinator 的归一化结果，不依赖 itinerary 的输出 → 三个 worker 可并行。
+    # ---- 两阶段依赖 + 段内并行拓扑 ----
+    # 依赖分析：budget（按行程消费项拆分预算）与 safety（针对行程活动的安全提示）
+    # 都依赖 itinerary 的输出作为上下文；budget 与 safety 之间互不依赖 → 段内并行。
     # LangGraph 同一 superstep 内的节点并发执行、全部完成后才进入下一 superstep，
     # review 恰好充当 fan-in 汇聚点（sub_reports 是 _append_reducer，并行写入安全）。
-    WORKERS = ["itinerary", "budget", "safety"]
+    PARALLEL_WORKERS = ["budget", "safety"]
 
-    # coordinator → 三路 fan-out（固定扇出，不读 next_node）
+    # coordinator → itinerary 单跳（行程先生成，作为下游上下文）
     sg.add_conditional_edges(
         source="coordinator",
-        path=lambda state: WORKERS,
-        path_map={w: w for w in WORKERS},
+        path=lambda state: ["itinerary"],
+        path_map={"itinerary": "itinerary"},
     )
 
-    # 三个 worker → review：固定路由（不走串行链）。
+    # itinerary → 两路 fan-out {budget, safety}（互不依赖，段内并行）
+    sg.add_conditional_edges(
+        source="itinerary",
+        path=lambda state: PARALLEL_WORKERS,
+        path_map={w: w for w in PARALLEL_WORKERS},
+    )
+
+    # 两个 worker → review：固定路由（不走串行链）。
     # worker 超时返回的 next_node='hitl' 在这里被有意忽略 —— 并行分支的路由无法
     # 感知兄弟分支，统一走 review，由 review 后的 hitl_gate_route 读取超时标记接管
-    for node_name in WORKERS:
+    for node_name in PARALLEL_WORKERS:
         sg.add_conditional_edges(
             source=node_name,
             path=lambda state: ROUTE_REVIEW,
             path_map={ROUTE_REVIEW: "review"},
         )
 
-    # review → HITL gate：revise 时三路并行重跑
+    # review → HITL gate：revise 时回退 itinerary（单跳，行程重生成后再 fan-out {b,s}）
     def _revise_fan_out(state) -> str | list[str]:
-        key = hitl_gate_route(state)  # 'hitl' / 'itinerary' / 'integrate'
-        if key == "itinerary":
-            return WORKERS
-        return key
+        # hitl_gate_route 返回 'hitl' / 'itinerary' / 'integrate'
+        # 'itinerary' 时单跳到 itinerary，行程完成后 itinerary 的出边会 fan-out {b,s}
+        return hitl_gate_route(state)
 
     sg.add_conditional_edges(
         source="review",
         path=_revise_fan_out,
         path_map={
             "hitl": "hitl",
-            **{w: w for w in WORKERS},
+            "itinerary": "itinerary",
             "integrate": "integrate",
         },
     )
 
-    # hitl → 恢复路由：revise（next_node='itinerary'）时同样三路并行重跑
-    def _hitl_fan_out(state) -> str | list[str]:
-        key = route_decision(state)
-        if key == "itinerary":
-            return WORKERS
-        return key
-
+    # hitl → 恢复路由：revise（next_node='itinerary'）时同样单跳 itinerary
     sg.add_conditional_edges(
         source="hitl",
-        path=_hitl_fan_out,
+        path=route_decision,
         path_map=PATH_MAP,
     )
 

@@ -705,9 +705,10 @@ BUDGET_PROMPT = """\
 def _trip_dates_context(state: dict[str, Any]) -> str:
     """从 parsed_info 取行程日期给 budget/safety prompt 注入。
 
-    主图三路并行时 budget/safety 读不到行程输出，LLM 会自己编日期
-    （与行程日期不一致 → review 抓跨报告不一致）。coordinator 的结构化
-    日期是唯一权威来源；无日期时显式告知用相对表述。
+    两阶段拓扑下 budget/safety 在 itinerary 之后执行，能读到行程输出；
+    但行程日期仍以 coordinator 的结构化解析为唯一权威来源（行程正文
+    里 LLM 仍可能编造越界日期，已被日期区间校验拦截）。无日期时显式
+    告知用相对表述。
     """
     parsed = state.get("parsed_info") or {}
     sd, ed = parsed.get("start_date") or "", parsed.get("end_date") or ""
